@@ -27,6 +27,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define FLASH_SIZE                  0x00422000
 #define INT_CODE_FLASH0_BASE        0x00400000
 #define INT_CODE_FLASH0_SIZE        0x00100000  // 1 MB
+#define INT_CODE_FLASH0_CORE0_VTOR  0x00400800
 #define INT_CODE_FLASH1_BASE        0x00500000
 #define INT_CODE_FLASH1_SIZE        0x00100000  // 1 MB
 #define INT_CODE_FLASH2_BASE        0x00600000
@@ -60,7 +61,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define S32K3_LPUART6_BASE          0x40340000
 #define S32K3_LPUART7_BASE          0x40344000
 #define S32K3_LPUART8_BASE          0x4048C000
-
 #define S32K3_LPUART9_BASE          0x40490000
 #define S32K3_LPUART10_BASE         0x40494000
 #define S32K3_LPUART11_BASE         0x40498000
@@ -68,6 +68,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define S32K3_LPUART13_BASE         0x404A0000
 #define S32K3_LPUART14_BASE         0x404A4000
 #define S32K3_LPUART15_BASE         0x404A8000
+
+#define S32K3_CONSOLE_LPUART_BASE S32K3_LPUART3_BASE
+#define S32K3_CONSOLE_LPUART_IRQ  144
+
+// FlexIO instance used by the UART loopback example
+#define S32K3_FLEXIO_BASE          0x40324000
+#define S32K3_FLEXIO_IRQ           139
 
 // LPSPI
 #define S32K344_NUM_LPSPI 6
@@ -85,6 +92,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define S32K3_LPSPI4_IRQ 73
 #define S32K3_LPSPI5_IRQ 74
 
+// Boot state
+#define S32K3_BOOT_STATUS_BASE   0x402DC000
+#define S32K3_BOOT_STATUS_SIZE   0x1000
+#define S32K3_BOOT_STATUS_GS     0x310
+#define S32K3_BOOT_STATUS_PCS    0x510
+#define S32K3_BOOT_STATUS_CTL_STAT 0x504
+#define S32K3_BOOT_STATUS_CLOCK_READY BIT(24)
+
 typedef struct S32K344State {
   MachineState parent_obj;
 
@@ -93,6 +108,7 @@ typedef struct S32K344State {
   Clock* sysclk;
 
   DeviceState* uart;
+  DeviceState* flexio;
   DeviceState* lpspi[S32K344_NUM_LPSPI];
 
   MemoryRegion itcm;
@@ -108,6 +124,8 @@ typedef struct S32K344State {
   MemoryRegion sram_standby;
   MemoryRegion sram0;
   MemoryRegion sram1;
+
+  MemoryRegion boot_status;
 } S32K344State;
 
 #endif

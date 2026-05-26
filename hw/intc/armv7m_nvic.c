@@ -1567,6 +1567,10 @@ static uint32_t nvic_readl(NVICState *s, uint32_t offset, MemTxAttrs attrs)
         return cpu->isar.mvfr1;
     case 0xf48: /* MVFR2 */
         return cpu->isar.mvfr2;
+    case 0xf90: /* Cortex-M7 cache maintenance alias */
+    case 0xf94: /* Cortex-M7 cache maintenance alias */
+        /* Caches are not modeled for M-profile CPUs, so these are RAZ/WI. */
+        return 0;
     default:
     bad_offset:
         qemu_log_mask(LOG_GUEST_ERROR, "NVIC: Bad read offset 0x%x\n", offset);
@@ -1871,6 +1875,9 @@ static void nvic_writel(NVICState *s, uint32_t offset, uint32_t value,
     case 0xd90: /* MPU_TYPE */
         return; /* RO */
     case 0xd94: /* MPU_CTRL */
+        if (cpu->pmsav7_dregion == 0) {
+            return;
+        }
         if ((value &
              (R_V7M_MPU_CTRL_HFNMIENA_MASK | R_V7M_MPU_CTRL_ENABLE_MASK))
             == R_V7M_MPU_CTRL_HFNMIENA_MASK) {
@@ -1884,6 +1891,9 @@ static void nvic_writel(NVICState *s, uint32_t offset, uint32_t value,
         tlb_flush(CPU(cpu));
         break;
     case 0xd98: /* MPU_RNR */
+        if (cpu->pmsav7_dregion == 0) {
+            return;
+        }
         if (value >= cpu->pmsav7_dregion) {
             qemu_log_mask(LOG_GUEST_ERROR, "MPU region out of range %"
                           PRIu32 "/%" PRIu32 "\n",
@@ -1898,6 +1908,10 @@ static void nvic_writel(NVICState *s, uint32_t offset, uint32_t value,
     case 0xdb4: /* MPU_RBAR_A3 */
     {
         int region;
+
+        if (cpu->pmsav7_dregion == 0) {
+            return;
+        }
 
         if (arm_feature(&cpu->env, ARM_FEATURE_V8)) {
             /* PMSAv8M handling of the aliases is different from v7M:
@@ -1949,6 +1963,10 @@ static void nvic_writel(NVICState *s, uint32_t offset, uint32_t value,
     case 0xdb8: /* MPU_RASR_A3 (v7M), MPU_RLAR_A3 (v8M) */
     {
         int region = cpu->env.pmsav7.rnr[attrs.secure];
+
+        if (cpu->pmsav7_dregion == 0) {
+            return;
+        }
 
         if (arm_feature(&cpu->env, ARM_FEATURE_V8)) {
             /* PMSAv8M handling of the aliases is different from v7M:
@@ -2185,6 +2203,8 @@ static void nvic_writel(NVICState *s, uint32_t offset, uint32_t value,
     case 0xf70: /* DCCIMVAC */
     case 0xf74: /* DCCISW */
     case 0xf78: /* BPIALL */
+    case 0xf90: /* Cortex-M7 cache maintenance alias */
+    case 0xf94: /* Cortex-M7 cache maintenance alias */
         /* Cache and branch predictor maintenance: for QEMU these always NOP */
         break;
     default:

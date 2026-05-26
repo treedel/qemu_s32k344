@@ -9,6 +9,8 @@
 #include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
 #include "hw/arm/s32k344.h"
+#include "hw/char/s32k3_uart.h"
+#include "hw/char/s32k3_flexio_uart.h"
 #include "hw/arm/boot.h"
 #include "hw/arm/machines-qom.h"
 #include "hw/core/qdev-properties.h"
@@ -23,10 +25,44 @@
 #include <time.h>
 
 
+static uint64_t s32k344_boot_status_read(void *opaque, hwaddr offset, unsigned size) {
+    switch (offset) {
+    case S32K3_BOOT_STATUS_GS:
+        return S32K3_BOOT_STATUS_CLOCK_READY;
+    case S32K3_BOOT_STATUS_CTL_STAT:
+        return 0;
+    case S32K3_BOOT_STATUS_PCS:
+        return UINT32_MAX;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "s32k344.boot-status: unimplemented read "
+                      "(size %u, offset 0x%" HWADDR_PRIx ")\n",
+                      size, offset);
+        return 0;
+    }
+}
+
+static void s32k344_boot_status_write(void *opaque, hwaddr offset, uint64_t value, unsigned size) {
+    qemu_log_mask(LOG_UNIMP,
+                  "s32k344.boot-status: unimplemented write "
+                  "(size %u, offset 0x%" HWADDR_PRIx ", value 0x%" PRIx64 ")\n",
+                  size, offset, value);
+}
+
+static const MemoryRegionOps s32k344_boot_status_ops = {
+    .read = s32k344_boot_status_read,
+    .write = s32k344_boot_status_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+};
+
 static void s32k344_init(MachineState* machine) {
     S32K344State* s = S32K344(machine);
     Error* error_local = NULL;
-    //DeviceState* dev;
+    DeviceState* dev;
     
     qemu_log_mask(CPU_LOG_INT, "Initializing S32K344\n");
 
@@ -48,7 +84,7 @@ static void s32k344_init(MachineState* machine) {
     memory_region_add_subregion(system_memory, INT_DTCM_STACK_BASE, &s->dtcm_stack);
 
     // Flash
-    memory_region_init_ram(&s->C0flash, NULL, "S32K344.C0flash", INT_CODE_FLASH0_SIZE, &error_fatal);
+    memory_region_init_rom(&s->C0flash, NULL, "S32K344.C0flash", INT_CODE_FLASH0_SIZE, &error_fatal);
     memory_region_add_subregion(system_memory, INT_CODE_FLASH0_BASE, &s->C0flash);
     memory_region_init_rom(&s->C1flash, NULL, "S32K344.C1flash", INT_CODE_FLASH1_SIZE, &error_fatal);
     memory_region_add_subregion(system_memory, INT_CODE_FLASH1_BASE, &s->C1flash);
@@ -80,8 +116,10 @@ static void s32k344_init(MachineState* machine) {
 
     // Configure CPU
     qdev_prop_set_string(DEVICE(&s->armv7m), "cpu-type", ARM_CPU_TYPE_NAME("cortex-m7"));
-    qdev_prop_set_uint32(DEVICE(&s->armv7m), "init-svtor", INT_CODE_FLASH0_BASE);
-    qdev_prop_set_uint32(DEVICE(&s->armv7m), "init-nsvtor", INT_CODE_FLASH0_BASE);
+    qdev_prop_set_uint32(DEVICE(&s->armv7m), "init-svtor", INT_CODE_FLASH0_CORE0_VTOR);
+    qdev_prop_set_uint32(DEVICE(&s->armv7m), "init-nsvtor", INT_CODE_FLASH0_CORE0_VTOR);
+    qdev_prop_set_uint32(DEVICE(&s->armv7m), "mpu-ns-regions", 0);
+    qdev_prop_set_uint32(DEVICE(&s->armv7m), "mpu-s-regions", 0);
     qdev_prop_set_uint8(DEVICE(&s->armv7m), "num-prio-bits", 4);
     qdev_prop_set_uint32(DEVICE(&s->armv7m), "num-irq", 240);
 
@@ -92,8 +130,31 @@ static void s32k344_init(MachineState* machine) {
     // Implement system bus device
     sysbus_realize(SYS_BUS_DEVICE(&s->armv7m), &error_local);
 
+    // Initialize UART
+    qemu_log_mask(CPU_LOG_INT, "Initializing UART\n");
+    dev = qdev_new(TYPE_S32E8_LPUART);
+
+    // Configure UART
+    qdev_prop_set_chr(dev, "chardev", serial_hd(0));
+    qdev_prop_set_uint32(dev, "lpuart_id", 3);
+    s->uart = dev;
+
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_local);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_CONSOLE_LPUART_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(DEVICE(&s->armv7m), S32K3_CONSOLE_LPUART_IRQ));
+
+    // Initialize the FlexIO UART channels used for board-level loopback
+    dev = qdev_new(TYPE_S32K3_FLEXIO_UART);
+    s->flexio = dev;
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_local);
+    s32k3_flexio_uart_connect_lpuart(S32K3_FLEXIO_UART(dev), S32K3X8_LPUART(s->uart));
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_FLEXIO_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(DEVICE(&s->armv7m), S32K3_FLEXIO_IRQ));
+
     // Map any missing S32K3 peripheral region used by firmware
-    create_unimplemented_device("S32K344.unimplemented_periph", 0x4028c000, 0x1000);
+    create_unimplemented_device("s32k3x8.peripherals", S32K3_PERIPH_BASE, 16 * MiB);
+    memory_region_init_io(&s->boot_status, NULL, &s32k344_boot_status_ops, s, "s32k344.boot-status", S32K3_BOOT_STATUS_SIZE);
+    memory_region_add_subregion_overlap(system_memory, S32K3_BOOT_STATUS_BASE, &s->boot_status, 1);
 
     // Enabling semihosting for guest BKPT operations
     qemu_semihosting_enable();
@@ -126,4 +187,4 @@ static void s32k344_machine_init(void) {
     type_register_static(&s32k344_type);
 }
 
-type_init(s32k344_machine_init)
+type_init(s32k344_machine_init);
