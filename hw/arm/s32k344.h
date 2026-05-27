@@ -7,6 +7,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qom/object.h"
+#include "net/can_emu.h"
 
 #define TYPE_S32K344 MACHINE_TYPE_NAME("s32k344")
 OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
@@ -92,6 +93,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define S32K3_LPSPI4_IRQ 73
 #define S32K3_LPSPI5_IRQ 74
 
+// FlexCAN
+#define S32K344_CAN_COUNT   6
+#define S32K3_FLEXCAN0_BASE      (S32K3_PERIPH_BASE + 0x304000) /* 0x40304000 */
+#define S32K3_FLEXCAN1_BASE      (S32K3_PERIPH_BASE + 0x308000) /* 0x40308000 */
+#define S32K3_FLEXCAN2_BASE      (S32K3_PERIPH_BASE + 0x30C000) /* 0x4030C000 */
+#define S32K3_FLEXCAN3_BASE      (S32K3_PERIPH_BASE + 0x310000) /* 0x40310000 */
+#define S32K3_FLEXCAN4_BASE      (S32K3_PERIPH_BASE + 0x314000) /* 0x40314000 */
+#define S32K3_FLEXCAN5_BASE      (S32K3_PERIPH_BASE + 0x318000) /* 0x40318000 */
+#define S32K3_FLEXCAN0_MB_IRQ    110
+#define S32K3_FLEXCAN1_MB_IRQ    114
+#define S32K3_FLEXCAN2_MB_IRQ    117
+#define S32K3_FLEXCAN3_MB_IRQ    120
+#define S32K3_FLEXCAN4_MB_IRQ    122
+#define S32K3_FLEXCAN5_MB_IRQ    124
+
 // Boot state
 #define S32K3_BOOT_STATUS_BASE   0x402DC000
 #define S32K3_BOOT_STATUS_SIZE   0x1000
@@ -110,6 +126,8 @@ typedef struct S32K344State {
   DeviceState* uart;
   DeviceState* flexio;
   DeviceState* lpspi[S32K344_NUM_LPSPI];
+  DeviceState *flexcan[S32K344_CAN_COUNT];
+  CanBusState *canbus[S32K344_CAN_COUNT];
 
   MemoryRegion itcm;
   MemoryRegion dtcm;

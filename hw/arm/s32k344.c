@@ -10,6 +10,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/arm/s32k344.h"
 #include "hw/char/s32k3_uart.h"
+#include "hw/net/s32k3_flexcan.h"
 #include "hw/char/s32k3_flexio_uart.h"
 #include "hw/arm/boot.h"
 #include "hw/arm/machines-qom.h"
@@ -58,6 +59,51 @@ static const MemoryRegionOps s32k344_boot_status_ops = {
     .valid.min_access_size = 1,
     .valid.max_access_size = 4,
 };
+
+static void s32k344_init_flexcan(S32K344State *s, ARMv7MState *armv7m) {
+    static const hwaddr flexcan_bases[S32K344_CAN_COUNT] = {
+        S32K3_FLEXCAN0_BASE,
+        S32K3_FLEXCAN1_BASE,
+        S32K3_FLEXCAN2_BASE,
+        S32K3_FLEXCAN3_BASE,
+        S32K3_FLEXCAN4_BASE,
+        S32K3_FLEXCAN5_BASE
+    };
+    static const int flexcan_mb_irq[S32K344_CAN_COUNT] = {
+        S32K3_FLEXCAN0_MB_IRQ,
+        S32K3_FLEXCAN1_MB_IRQ,
+        S32K3_FLEXCAN2_MB_IRQ,
+        S32K3_FLEXCAN3_MB_IRQ,
+        S32K3_FLEXCAN4_MB_IRQ,
+        S32K3_FLEXCAN5_MB_IRQ
+    };
+    static const uint32_t flexcan_instance[S32K344_CAN_COUNT] = {
+        0, 1, 2, 3, 4, 5
+    };
+    Error *local_err = NULL;
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing FlexCAN instances\n");
+
+    for (int i = 0; i < S32K344_CAN_COUNT; i++) {
+        DeviceState *dev = qdev_new(TYPE_S32K3X8_FLEXCAN);
+        s->flexcan[i] = dev;
+
+        qdev_prop_set_uint32(dev, "can-instance", flexcan_instance[i]);
+        if (s->canbus[i]) {
+            object_property_set_link(OBJECT(dev), "canbus", OBJECT(s->canbus[i]), &error_abort);
+        }
+
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+            error_reportf_err(local_err, "Failed to realize FlexCAN instance %u: ", flexcan_instance[i]);
+            return;
+        }
+
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, flexcan_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(DEVICE(armv7m), flexcan_mb_irq[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "FlexCAN instances initialized\n");
+}
 
 static void s32k344_init(MachineState* machine) {
     S32K344State* s = S32K344(machine);
@@ -150,6 +196,15 @@ static void s32k344_init(MachineState* machine) {
     s32k3_flexio_uart_connect_lpuart(S32K3_FLEXIO_UART(dev), S32K3X8_LPUART(s->uart));
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_FLEXIO_BASE);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(DEVICE(&s->armv7m), S32K3_FLEXIO_IRQ));
+
+    // Initialize FlexCAN devices
+    s32k344_init_flexcan(s, &s->armv7m);
+    object_property_add_link(OBJECT(machine), "canbus0", TYPE_CAN_BUS, (Object **)&s->canbus[0], object_property_allow_set_link, 0);
+    object_property_add_link(OBJECT(machine), "canbus1", TYPE_CAN_BUS, (Object **)&s->canbus[1], object_property_allow_set_link, 0);
+    object_property_add_link(OBJECT(machine), "canbus2", TYPE_CAN_BUS, (Object **)&s->canbus[2], object_property_allow_set_link, 0);
+    object_property_add_link(OBJECT(machine), "canbus3", TYPE_CAN_BUS, (Object **)&s->canbus[3], object_property_allow_set_link, 0);
+    object_property_add_link(OBJECT(machine), "canbus4", TYPE_CAN_BUS, (Object **)&s->canbus[4], object_property_allow_set_link, 0);
+    object_property_add_link(OBJECT(machine), "canbus5", TYPE_CAN_BUS, (Object **)&s->canbus[5], object_property_allow_set_link, 0);
 
     // Map any missing S32K3 peripheral region used by firmware
     create_unimplemented_device("s32k3x8.peripherals", S32K3_PERIPH_BASE, 16 * MiB);

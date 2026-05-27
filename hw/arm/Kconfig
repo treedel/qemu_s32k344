@@ -721,3 +721,5 @@ config S32K344
     bool
     depends on TCG && ARM
     select ARM_V7M
+    select S32K3_UART
+    select S32K3_FLEXCAN
