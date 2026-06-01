@@ -21,6 +21,7 @@ struct S32K3X8FlexCANState {
 
     uint32_t instance_id;
     uint16_t timestamp;
+    int locked_rx_mb;
     uint32_t regs[S32K3X8_FLEXCAN_MMIO_SIZE / sizeof(uint32_t)];
 };
 

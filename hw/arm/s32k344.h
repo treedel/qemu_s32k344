@@ -109,6 +109,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define S32K3_FLEXCAN5_MB_IRQ    124
 
 // Boot state
+#define S32K3_MC_ME_BASE        0x402D0000
+#define S32K3_MC_ME_SIZE        0x20000
 #define S32K3_BOOT_STATUS_BASE   0x402DC000
 #define S32K3_BOOT_STATUS_SIZE   0x1000
 #define S32K3_BOOT_STATUS_GS     0x310
@@ -144,6 +146,8 @@ typedef struct S32K344State {
   MemoryRegion sram1;
 
   MemoryRegion boot_status;
+  MemoryRegion mc_me;
+  uint32_t mc_me_regs[S32K3_MC_ME_SIZE / sizeof(uint32_t)];
 } S32K344State;
 
 #endif

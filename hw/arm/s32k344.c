@@ -35,11 +35,7 @@ static uint64_t s32k344_boot_status_read(void *opaque, hwaddr offset, unsigned s
     case S32K3_BOOT_STATUS_PCS:
         return UINT32_MAX;
     default:
-        qemu_log_mask(LOG_UNIMP,
-                      "s32k344.boot-status: unimplemented read "
-                      "(size %u, offset 0x%" HWADDR_PRIx ")\n",
-                      size, offset);
-        return 0;
+        return UINT32_MAX;
     }
 }
 
@@ -57,6 +53,59 @@ static const MemoryRegionOps s32k344_boot_status_ops = {
     .impl.min_access_size = 1,
     .impl.max_access_size = 4,
     .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+};
+
+static bool s32k344_mc_me_is_cofb_status(hwaddr offset)
+{
+    if (offset >= 0x110 && offset < 0x120) {
+        return true;
+    }
+
+    return offset >= 0x10000 && ((offset & 0xf) == 0x4);
+}
+
+static uint64_t s32k344_mc_me_read(void *opaque, hwaddr offset, unsigned size)
+{
+    S32K344State *s = opaque;
+
+    if (size != 4 || offset + size > S32K3_MC_ME_SIZE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "s32k344.mc_me: invalid read size %u "
+                      "@0x%" HWADDR_PRIx "\n", size, offset);
+        return 0;
+    }
+
+    if (s32k344_mc_me_is_cofb_status(offset)) {
+        return UINT32_MAX;
+    }
+
+    return s->mc_me_regs[offset >> 2];
+}
+
+static void s32k344_mc_me_write(void *opaque, hwaddr offset,
+                                uint64_t value, unsigned size)
+{
+    S32K344State *s = opaque;
+
+    if (size != 4 || offset + size > S32K3_MC_ME_SIZE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "s32k344.mc_me: invalid write size %u "
+                      "@0x%" HWADDR_PRIx ", value 0x%" PRIx64 "\n",
+                      size, offset, value);
+        return;
+    }
+
+    s->mc_me_regs[offset >> 2] = value;
+}
+
+static const MemoryRegionOps s32k344_mc_me_ops = {
+    .read = s32k344_mc_me_read,
+    .write = s32k344_mc_me_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+    .valid.min_access_size = 4,
     .valid.max_access_size = 4,
 };
 
@@ -199,17 +248,15 @@ static void s32k344_init(MachineState* machine) {
 
     // Initialize FlexCAN devices
     s32k344_init_flexcan(s, &s->armv7m);
-    object_property_add_link(OBJECT(machine), "canbus0", TYPE_CAN_BUS, (Object **)&s->canbus[0], object_property_allow_set_link, 0);
-    object_property_add_link(OBJECT(machine), "canbus1", TYPE_CAN_BUS, (Object **)&s->canbus[1], object_property_allow_set_link, 0);
-    object_property_add_link(OBJECT(machine), "canbus2", TYPE_CAN_BUS, (Object **)&s->canbus[2], object_property_allow_set_link, 0);
-    object_property_add_link(OBJECT(machine), "canbus3", TYPE_CAN_BUS, (Object **)&s->canbus[3], object_property_allow_set_link, 0);
-    object_property_add_link(OBJECT(machine), "canbus4", TYPE_CAN_BUS, (Object **)&s->canbus[4], object_property_allow_set_link, 0);
-    object_property_add_link(OBJECT(machine), "canbus5", TYPE_CAN_BUS, (Object **)&s->canbus[5], object_property_allow_set_link, 0);
 
     // Map any missing S32K3 peripheral region used by firmware
     create_unimplemented_device("s32k3x8.peripherals", S32K3_PERIPH_BASE, 16 * MiB);
+    memory_region_init_io(&s->mc_me, NULL, &s32k344_mc_me_ops, s,
+                          "s32k344.mc_me", S32K3_MC_ME_SIZE);
+    memory_region_add_subregion_overlap(system_memory, S32K3_MC_ME_BASE,
+                                        &s->mc_me, 1);
     memory_region_init_io(&s->boot_status, NULL, &s32k344_boot_status_ops, s, "s32k344.boot-status", S32K3_BOOT_STATUS_SIZE);
-    memory_region_add_subregion_overlap(system_memory, S32K3_BOOT_STATUS_BASE, &s->boot_status, 1);
+    memory_region_add_subregion_overlap(system_memory, S32K3_BOOT_STATUS_BASE, &s->boot_status, 2);
 
     // Enabling semihosting for guest BKPT operations
     qemu_semihosting_enable();
@@ -228,10 +275,35 @@ static void s32k344_class_init(ObjectClass* oc, const void* data) {
     mc->default_ram_size = SRAM_SIZE;
 }
 
+static void s32k344_instance_init(Object *obj)
+{
+    S32K344State *s = S32K344(obj);
+
+    object_property_add_link(obj, "canbus0", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[0],
+                             object_property_allow_set_link, 0);
+    object_property_add_link(obj, "canbus1", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[1],
+                             object_property_allow_set_link, 0);
+    object_property_add_link(obj, "canbus2", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[2],
+                             object_property_allow_set_link, 0);
+    object_property_add_link(obj, "canbus3", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[3],
+                             object_property_allow_set_link, 0);
+    object_property_add_link(obj, "canbus4", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[4],
+                             object_property_allow_set_link, 0);
+    object_property_add_link(obj, "canbus5", TYPE_CAN_BUS,
+                             (Object **)&s->canbus[5],
+                             object_property_allow_set_link, 0);
+}
+
 static const TypeInfo s32k344_type = {
     .name = TYPE_S32K344,
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(S32K344State),
+    .instance_init = s32k344_instance_init,
     .class_init = s32k344_class_init,
     .interfaces = arm_machine_interfaces,
 };

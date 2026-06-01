@@ -142,6 +142,7 @@ static void s32k3x8_flexcan_reset_registers(S32K3X8FlexCANState *s)
 {
     memset(s->regs, 0, sizeof(s->regs));
     s->timestamp = 0;
+    s->locked_rx_mb = -1;
 
     /* Start disabled with 32 message buffers selected. */
     s->regs[flexcan_reg_index(FLEXCAN_MCR_OFFSET)] = FLEXCAN_MCR_MDIS_MASK |
@@ -336,28 +337,54 @@ static void s32k3x8_flexcan_try_tx_mb(S32K3X8FlexCANState *s, unsigned mb_idx)
 static uint64_t s32k3x8_flexcan_read(void *opaque, hwaddr addr, unsigned size)
 {
     S32K3X8FlexCANState *s = S32K3X8_FLEXCAN(opaque);
+    hwaddr word_addr = addr & ~3ULL;
+    unsigned shift = (addr & 3U) * 8U;
     uint32_t idx;
+    uint32_t value;
+    unsigned mb_idx;
 
-    if (size != 4) {
+    if (size != 1 && size != 2 && size != 4) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "s32k3x8-flexcan: invalid read size %u @0x%" HWADDR_PRIx
                       "\n", size, addr);
         return 0;
     }
-    if (addr >= S32K3X8_FLEXCAN_MMIO_SIZE) {
+    if (addr + size > S32K3X8_FLEXCAN_MMIO_SIZE ||
+        ((addr & 3U) + size) > 4U) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "s32k3x8-flexcan: out-of-range read @0x%" HWADDR_PRIx
                       "\n", addr);
         return 0;
     }
 
-    if (addr == FLEXCAN_TIMER_OFFSET) {
+    if (word_addr == FLEXCAN_TIMER_OFFSET) {
+        if (s->locked_rx_mb >= 0) {
+            uint32_t *mb = flexcan_mb_addr(s, s->locked_rx_mb);
+
+            if (flexcan_cs_code(mb[0]) == FLEXCAN_RX_FULL) {
+                mb[0] &= ~FLEXCAN_CS_CODE_MASK;
+                mb[0] |= (FLEXCAN_RX_EMPTY << FLEXCAN_CS_CODE_SHIFT) &
+                         FLEXCAN_CS_CODE_MASK;
+            }
+            s->locked_rx_mb = -1;
+        }
         s->regs[flexcan_reg_index(FLEXCAN_TIMER_OFFSET)] =
             (uint32_t)s->timestamp++;
     }
 
-    idx = flexcan_reg_index(addr);
-    return s->regs[idx];
+    idx = flexcan_reg_index(word_addr);
+    value = s->regs[idx] >> shift;
+    if (size == 4 && flexcan_is_mb_cs_addr(word_addr, &mb_idx) &&
+        flexcan_cs_code(value) == FLEXCAN_RX_FULL) {
+        s->locked_rx_mb = mb_idx;
+    }
+    if (size == 1) {
+        return value & 0xffU;
+    }
+    if (size == 2) {
+        return value & 0xffffU;
+    }
+    return value;
 }
 
 static void s32k3x8_flexcan_write(void *opaque,
@@ -366,25 +393,36 @@ static void s32k3x8_flexcan_write(void *opaque,
                                   unsigned size)
 {
     S32K3X8FlexCANState *s = S32K3X8_FLEXCAN(opaque);
-    uint32_t v = (uint32_t)value;
+    hwaddr word_addr = addr & ~3ULL;
+    unsigned shift = (addr & 3U) * 8U;
+    uint32_t mask;
+    uint32_t v;
     uint32_t idx;
     unsigned mb_idx;
 
-    if (size != 4) {
+    if (size != 1 && size != 2 && size != 4) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "s32k3x8-flexcan: invalid write size %u @0x%" HWADDR_PRIx
                       "\n", size, addr);
         return;
     }
-    if (addr >= S32K3X8_FLEXCAN_MMIO_SIZE) {
+    if (addr + size > S32K3X8_FLEXCAN_MMIO_SIZE ||
+        ((addr & 3U) + size) > 4U) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "s32k3x8-flexcan: out-of-range write @0x%" HWADDR_PRIx
                       "\n", addr);
         return;
     }
 
-    idx = flexcan_reg_index(addr);
-    switch (addr) {
+    idx = flexcan_reg_index(word_addr);
+    if (size == 4) {
+        mask = 0xffffffffU;
+    } else {
+        mask = ((1U << (size * 8U)) - 1U) << shift;
+    }
+    v = (s->regs[idx] & ~mask) | (((uint32_t)value << shift) & mask);
+
+    switch (word_addr) {
     case FLEXCAN_MCR_OFFSET:
         s->regs[idx] &= FLEXCAN_MCR_LPMACK_MASK |
                         FLEXCAN_MCR_FRZACK_MASK |
@@ -419,7 +457,7 @@ static void s32k3x8_flexcan_write(void *opaque,
         break;
     }
 
-    if (flexcan_is_mb_cs_addr(addr, &mb_idx)) {
+    if (flexcan_is_mb_cs_addr(word_addr, &mb_idx)) {
         s32k3x8_flexcan_try_tx_mb(s, mb_idx);
     }
 }
@@ -429,11 +467,12 @@ static const MemoryRegionOps s32k3x8_flexcan_ops = {
     .write = s32k3x8_flexcan_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
-        .min_access_size = 4,
+        .min_access_size = 1,
         .max_access_size = 4,
+        .unaligned = false,
     },
     .impl = {
-        .min_access_size = 4,
+        .min_access_size = 1,
         .max_access_size = 4,
     },
 };
