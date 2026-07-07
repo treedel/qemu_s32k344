@@ -1,5 +1,5 @@
-#ifndef HW_ARM_S32K344_H
-#define HW_ARM_S32K344_H
+#ifndef HW_ARM_S32K388_H
+#define HW_ARM_S32K388_H
 
 #include "hw/arm/armv7m.h"
 #include "hw/core/boards.h"
@@ -9,11 +9,11 @@
 #include "qom/object.h"
 #include "net/can_emu.h"
 
-#define TYPE_S32K344 MACHINE_TYPE_NAME("s32k344")
-OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
+#define TYPE_S32K388 MACHINE_TYPE_NAME("s32k388")
+OBJECT_DECLARE_SIMPLE_TYPE(S32K388State, S32K388)
 
 // System frequency definitions
-#define S32K3_SYSCLK_FREQ           (160 * 1000 * 1000)  // 160MHz
+#define S32K3_SYSCLK_FREQ           (320 * 1000 * 1000)  // 320MHz
 
 // Memory definitions
 #define INT_ITCM_BASE               0x00000000  // Instruction Tightly Coupled Memory
@@ -25,29 +25,31 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define INT_DTCM_STACK_SIZE         (4 * KiB)   // 4KB
 
 // Flash
-#define FLASH_SIZE                  0x00422000
+#define FLASH_SIZE                  0x00822000
 #define INT_CODE_FLASH0_BASE        0x00400000
-#define INT_CODE_FLASH0_SIZE        0x00100000  // 1 MB
+#define INT_CODE_FLASH0_SIZE        0x00200000  // 2 MB
 #define INT_CODE_FLASH0_CORE0_VTOR  0x00400800
-#define INT_CODE_FLASH1_BASE        0x00500000
-#define INT_CODE_FLASH1_SIZE        0x00100000  // 1 MB
-#define INT_CODE_FLASH2_BASE        0x00600000
-#define INT_CODE_FLASH2_SIZE        0x00100000  // 1 MB
-#define INT_CODE_FLASH3_BASE        0x00700000
-#define INT_CODE_FLASH3_SIZE        0x00100000  // 1 MB
+#define INT_CODE_FLASH1_BASE        0x00600000
+#define INT_CODE_FLASH1_SIZE        0x00200000  // 2 MB
+#define INT_CODE_FLASH2_BASE        0x00800000
+#define INT_CODE_FLASH2_SIZE        0x00200000  // 2 MB
+#define INT_CODE_FLASH3_BASE        0x00A00000
+#define INT_CODE_FLASH3_SIZE        0x00200000  // 2 MB
 #define INT_DATA_FLASH_BASE         0x10000000
 #define INT_DATA_FLASH_SIZE         0x00020000  // 128 KB
 #define INT_UTEST_NVM_FLASH_BASE    0x1B000000
 #define INT_UTEST_NVM_FLASH_SIZE    0x00002000  // 8 KB
 
 // SRAM
-#define SRAM_SIZE                   0x50000
+#define SRAM_SIZE                   0xC0000
 #define INT_SRAM_STANDBY_BASE       0x20400000  // SRAM_standby, SPLIT FROM SRAM0
-#define INT_SRAM_STANDBY_SIZE       0x08000     // 32KB
-#define INT_SRAM_0_BASE             0x20408000
-#define INT_SRAM_0_SIZE             0x20000     // 160KB-32KB
-#define INT_SRAM_1_BASE             0x20428000
-#define INT_SRAM_1_SIZE             0x28000     // 160KB
+#define INT_SRAM_STANDBY_SIZE       0x10000     // 64KB
+#define INT_SRAM_0_BASE             0x20410000
+#define INT_SRAM_0_SIZE             0x30000     // 256KB-64KB = 192KB
+#define INT_SRAM_1_BASE             0x20440000
+#define INT_SRAM_1_SIZE             0x40000     // 256KB
+#define INT_SRAM_2_BASE             0x20480000
+#define INT_SRAM_2_SIZE             0x40000     // 256KB
 
 // Peripheral definitions
 #define S32K3_PERIPH_BASE           0x40000000
@@ -78,7 +80,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define S32K3_FLEXIO_IRQ           139
 
 // LPSPI
-#define S32K344_NUM_LPSPI 6
+#define S32K388_NUM_LPSPI 6
 #define S32K3_LPSPI0_BASE (S32K3_PERIPH_BASE + 0x358000)  // 0x40358000
 #define S32K3_LPSPI1_BASE (S32K3_PERIPH_BASE + 0x35C000)  // 0x4035C000
 #define S32K3_LPSPI2_BASE (S32K3_PERIPH_BASE + 0x360000)  // 0x40360000
@@ -94,7 +96,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define S32K3_LPSPI5_IRQ 74
 
 // FlexCAN
-#define S32K344_CAN_COUNT   6
+#define S32K388_CAN_COUNT   6
 #define S32K3_FLEXCAN0_BASE      (S32K3_PERIPH_BASE + 0x304000) /* 0x40304000 */
 #define S32K3_FLEXCAN1_BASE      (S32K3_PERIPH_BASE + 0x308000) /* 0x40308000 */
 #define S32K3_FLEXCAN2_BASE      (S32K3_PERIPH_BASE + 0x30C000) /* 0x4030C000 */
@@ -118,7 +120,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K344State, S32K344)
 #define S32K3_BOOT_STATUS_CTL_STAT 0x504
 #define S32K3_BOOT_STATUS_CLOCK_READY BIT(24)
 
-typedef struct S32K344State {
+typedef struct S32K388State {
   MachineState parent_obj;
 
   ARMv7MState armv7m;
@@ -127,9 +129,9 @@ typedef struct S32K344State {
 
   DeviceState* uart;
   DeviceState* flexio;
-  DeviceState* lpspi[S32K344_NUM_LPSPI];
-  DeviceState *flexcan[S32K344_CAN_COUNT];
-  CanBusState *canbus[S32K344_CAN_COUNT];
+  DeviceState* lpspi[S32K388_NUM_LPSPI];
+  DeviceState *flexcan[S32K388_CAN_COUNT];
+  CanBusState *canbus[S32K388_CAN_COUNT];
 
   MemoryRegion itcm;
   MemoryRegion dtcm;
@@ -144,10 +146,11 @@ typedef struct S32K344State {
   MemoryRegion sram_standby;
   MemoryRegion sram0;
   MemoryRegion sram1;
+  MemoryRegion sram2;
 
   MemoryRegion boot_status;
   MemoryRegion mc_me;
   uint32_t mc_me_regs[S32K3_MC_ME_SIZE / sizeof(uint32_t)];
-} S32K344State;
+} S32K388State;
 
 #endif
