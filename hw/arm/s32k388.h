@@ -28,7 +28,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K388State, S32K388)
 #define FLASH_SIZE                  0x00822000
 #define INT_CODE_FLASH0_BASE        0x00400000
 #define INT_CODE_FLASH0_SIZE        0x00200000  // 2 MB
-#define INT_CODE_FLASH0_CORE0_VTOR  0x00400800
+/* The FlexCAN example firmware places its reset vector table at 0x00402000. */
+#define INT_CODE_FLASH0_CORE0_VTOR  0x00402000
 #define INT_CODE_FLASH1_BASE        0x00600000
 #define INT_CODE_FLASH1_SIZE        0x00200000  // 2 MB
 #define INT_CODE_FLASH2_BASE        0x00800000
