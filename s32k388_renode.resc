@@ -5,7 +5,7 @@ machine LoadPlatformDescription @/home/kj/Downloads/renode-1.16.0.linux-portable
 
 sysbus LoadELF @/home/kj/QEMU/qemu_s32k344/ELF/LpuartFlexio_Uart_Ip_Example_S32K388.elf
 
-# This firmware is linked for the S32K388 flash image and expects the reset handler
-# to start at 0x00402421 with the initial stack at 0x20010000.
-sysbus.cpu0 SetRegisterUnsafe "sp" 0x20010000
-sysbus.cpu0 SetRegisterUnsafe "pc" 0x00402421
+# The firmware exposes VTABLE at 0x402000 and Reset_Handler at 0x402421.
+# Set the Cortex-M vector table offset to the firmware's VTABLE so startup uses the
+# correct reset handler and initial stack.
+sysbus.cpu0 VectorTableOffset `sysbus GetSymbolAddress "VTABLE"`
