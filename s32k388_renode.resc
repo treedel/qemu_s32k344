@@ -1,0 +1,11 @@
+using sysbus
+
+mach create "s32k388"
+machine LoadPlatformDescription @/home/kj/Downloads/renode-1.16.0.linux-portable/renode_1.16.0_portable/platforms/cpus/nxp-s32k388.repl
+
+sysbus LoadELF @/home/kj/QEMU/qemu_s32k344/ELF/LpuartFlexio_Uart_Ip_Example_S32K388.elf
+
+# This firmware is linked for the S32K388 flash image and expects the reset handler
+# to start at 0x00402421 with the initial stack at 0x20010000.
+sysbus.cpu0 SetRegisterUnsafe "sp" 0x20010000
+sysbus.cpu0 SetRegisterUnsafe "pc" 0x00402421
