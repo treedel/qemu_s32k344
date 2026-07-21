@@ -30,7 +30,9 @@ if command -v ip >/dev/null 2>&1 && ip link show vcan0 >/dev/null 2>&1; then
         -machine canbus0=canbus0
     )
 else
-    echo "SocketCAN interface vcan0 not available; launching without CAN support"
+    ip link add dev vcan0 type vcan
+    ip link set up vcan0
+    echo "SocketCAN interface vcan0 not available; launching without CAN support"4
 fi
 
 # Launch selected QEMU
