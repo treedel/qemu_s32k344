@@ -730,3 +730,10 @@ config S32K388
     select ARM_V7M
     select S32K3_UART
     select S32K3_FLEXCAN
+
+config S32K389
+    bool
+    depends on TCG && ARM
+    select ARM_V7M
+    select S32K3_UART
+    select S32K3_FLEXCAN

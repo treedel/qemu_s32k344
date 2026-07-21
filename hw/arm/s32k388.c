@@ -276,7 +276,7 @@ static void s32k388_class_init(ObjectClass* oc, const void* data) {
     mc->max_cpus = 1;
     mc->default_ram_size = SRAM_SIZE;
 }
-
+// CANBUS
 static void s32k388_instance_init(Object *obj)
 {
     S32K388State *s = S32K388(obj);
