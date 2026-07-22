@@ -29,10 +29,12 @@ if command -v ip >/dev/null 2>&1 && ip link show vcan0 >/dev/null 2>&1; then
         -object can-host-socketcan,id=socketcan0,if=vcan0,canbus=canbus0
         -machine canbus0=canbus0
     )
+
+    echo "vcan0 unavailable; using an internal QEMU CAN bus"
 else
-    ip link add dev vcan0 type vcan
-    ip link set up vcan0
-    echo "SocketCAN interface vcan0 not available; launching without CAN support"4
+    #ip link add dev vcan0 type vcan
+    #ip link set up vcan0
+    echo "SocketCAN interface vcan0 not available; launching without CAN support"
 fi
 
 # Launch selected QEMU
@@ -41,5 +43,7 @@ exec "$QEMU_BIN" \
   -kernel "$KERNEL_PATH" \
   -nographic \
   -serial mon:stdio \
+  -S \
+  -gdb tcp::1234 \
   "${CAN_ARGS[@]}" \
   -d "$DEBUG_PARAMS"
