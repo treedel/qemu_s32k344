@@ -154,6 +154,36 @@ static void s32k388_init_flexcan(S32K388State *s, ARMv7MState *armv7m) {
     qemu_log_mask(CPU_LOG_INT, "FlexCAN instances initialized\n");
 }
 
+static void s32k388_init_gmac(S32K388State *s, MachineState *machine)
+{
+    static const hwaddr gmac_bases[S32K388_GMAC_COUNT] = {
+        S32K388_GMAC0_BASE,
+        S32K388_GMAC1_BASE,
+    };
+    static const int gmac_irqs[S32K388_GMAC_COUNT] = {
+        S32K388_GMAC0_IRQ,
+        S32K388_GMAC1_IRQ,
+    };
+    char name[16];
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing GMAC Ethernet instances\n");
+
+    for (int i = 0; i < S32K388_GMAC_COUNT; i++) {
+        snprintf(name, sizeof(name), "gmac%d", i);
+        object_initialize_child(OBJECT(machine), name, &s->gmac[i],
+                                TYPE_NPCM_GMAC);
+
+        qemu_configure_nic_device(DEVICE(&s->gmac[i]), true, NULL);
+        sysbus_realize(SYS_BUS_DEVICE(&s->gmac[i]), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(&s->gmac[i]), 0, gmac_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->gmac[i]), 0,
+                           qdev_get_gpio_in(DEVICE(&s->armv7m),
+                                            gmac_irqs[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "GMAC Ethernet instances initialized\n");
+}
+
 static void s32k388_init(MachineState* machine) {
     S32K388State* s = S32K388(machine);
     Error* error_local = NULL;
@@ -250,6 +280,9 @@ static void s32k388_init(MachineState* machine) {
 
     // Initialize FlexCAN devices
     s32k388_init_flexcan(s, &s->armv7m);
+
+    // Initialize GMAC Ethernet devices
+    s32k388_init_gmac(s, machine);
 
     // Map any missing S32K3 peripheral region used by firmware
     create_unimplemented_device("s32k3x8.peripherals", S32K3_PERIPH_BASE, 16 * MiB);

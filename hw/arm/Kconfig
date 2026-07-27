@@ -473,6 +473,7 @@ config NPCM7XX
     select UNIMP
     select PCA954X
     select USB_OHCI_SYSBUS
+    select NPCM_GMAC
 
 config NPCM8XX
     bool
@@ -730,6 +731,7 @@ config S32K388
     select ARM_V7M
     select S32K3_UART
     select S32K3_FLEXCAN
+    select NPCM_GMAC
 
 config S32K389
     bool

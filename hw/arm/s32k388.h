@@ -8,6 +8,7 @@
 #include "qemu/units.h"
 #include "qom/object.h"
 #include "net/can_emu.h"
+#include "hw/net/npcm_gmac.h"
 
 #define TYPE_S32K388 MACHINE_TYPE_NAME("s32k388")
 OBJECT_DECLARE_SIMPLE_TYPE(S32K388State, S32K388)
@@ -111,6 +112,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K388State, S32K388)
 #define S32K3_FLEXCAN4_MB_IRQ    122
 #define S32K3_FLEXCAN5_MB_IRQ    124
 
+// GMAC Ethernet
+#define S32K388_GMAC_COUNT       2
+#define S32K388_GMAC0_BASE       0x40484000
+#define S32K388_GMAC1_BASE       0x40488000
+#define S32K388_GMAC0_IRQ        224
+#define S32K388_GMAC1_IRQ        171
+
 // Boot state
 #define S32K3_MC_ME_BASE        0x402D0000
 #define S32K3_MC_ME_SIZE        0x20000
@@ -133,6 +141,7 @@ typedef struct S32K388State {
   DeviceState* lpspi[S32K388_NUM_LPSPI];
   DeviceState *flexcan[S32K388_CAN_COUNT];
   CanBusState *canbus[S32K388_CAN_COUNT];
+  NPCMGMACState gmac[S32K388_GMAC_COUNT];
 
   MemoryRegion itcm;
   MemoryRegion dtcm;

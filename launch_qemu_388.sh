@@ -35,6 +35,14 @@ else
     echo "SocketCAN interface vcan0 not available; launching without CAN support"
 fi
 
+NET_ARGS=()
+if [ -n "${QEMU_NET_ARGS:-}" ]; then
+    # shellcheck disable=SC2206
+    NET_ARGS=($QEMU_NET_ARGS)
+else
+    NET_ARGS=(-nic user,model=npcm-gmac)
+fi
+
 # Launch selected QEMU
 exec "$QEMU_BIN" \
   -M "$MACHINE_TYPE" \
@@ -42,4 +50,5 @@ exec "$QEMU_BIN" \
   -nographic \
   -serial mon:stdio \
   "${CAN_ARGS[@]}" \
+  "${NET_ARGS[@]}" \
   -d "$DEBUG_PARAMS"
