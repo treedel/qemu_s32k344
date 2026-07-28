@@ -56,6 +56,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K388State, S32K388)
 // Peripheral definitions
 #define S32K3_PERIPH_BASE           0x40000000
 
+// Early boot support stubs used by NXP RTD initialization
+#define S32K3_MSCM_BASE             0x40260000
+#define S32K3_MSCM_SIZE             0x4000
+#define S32K3_SWT0_BASE             0x40270000
+#define S32K3_SWT0_SIZE             0x4000
+#define S32K3_RTC_BASE              0x40288000
+#define S32K3_RTC_SIZE              0x4000
+#define S32K3_MC_RGM_BASE           0x4028C000
+#define S32K3_MC_RGM_SIZE           0x4000
+#define S32K3_DCM_BASE              0x402AC000
+#define S32K3_DCM_SIZE              0x4000
+#define S32K3_SXOSC_BASE            0x402CC000
+#define S32K3_SXOSC_SIZE            0x4000
+
 // LPUART
 #define S32K3_UART_BASE             0x40328000
 #define S32K3_LPUART1_BASE          0x4032C000
@@ -160,6 +174,12 @@ typedef struct S32K388State {
 
   MemoryRegion boot_status;
   MemoryRegion mc_me;
+  MemoryRegion mscm;
+  MemoryRegion swt0;
+  MemoryRegion rtc;
+  MemoryRegion mc_rgm;
+  MemoryRegion dcm;
+  MemoryRegion sxosc;
   uint32_t mc_me_regs[S32K3_MC_ME_SIZE / sizeof(uint32_t)];
 } S32K388State;
 

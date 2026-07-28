@@ -51,6 +51,18 @@ REG32(NPCM_DMA_CUR_TX_BUF_ADDR, 0x1050)
 REG32(NPCM_DMA_CUR_RX_BUF_ADDR, 0x1054)
 REG32(NPCM_DMA_HW_FEATURE, 0x1058)
 
+REG32(EQOS_DMA_CH0_CONTROL, 0x1100)
+REG32(EQOS_DMA_CH0_TX_CONTROL, 0x1104)
+REG32(EQOS_DMA_CH0_RX_CONTROL, 0x1108)
+REG32(EQOS_DMA_CH0_TXDESC_LIST_ADDRESS, 0x1114)
+REG32(EQOS_DMA_CH0_RXDESC_LIST_ADDRESS, 0x111c)
+REG32(EQOS_DMA_CH0_TXDESC_TAIL_POINTER, 0x1120)
+REG32(EQOS_DMA_CH0_RXDESC_TAIL_POINTER, 0x1128)
+REG32(EQOS_DMA_CH0_TXDESC_RING_LENGTH, 0x112c)
+REG32(EQOS_DMA_CH0_RXDESC_RING_LENGTH, 0x1130)
+REG32(EQOS_DMA_CH0_INTERRUPT_ENABLE, 0x1134)
+REG32(EQOS_DMA_CH0_CURRENT_APP_TXDESC, 0x114c)
+
 REG32(NPCM_GMAC_MAC_CONFIG, 0x0)
 REG32(NPCM_GMAC_FRAME_FILTER, 0x4)
 REG32(NPCM_GMAC_HASH_HIGH, 0x8)
@@ -96,6 +108,14 @@ REG32(NPCM_GMAC_PTP_TTSR, 0x71c)
 #define NPCM_GMAC_INT_MASK_RGIM             BIT(0)
 
 #define NPCM_DMA_BUS_MODE_SWR               BIT(0)
+
+#define EQOS_DMA_CH0_TX_CONTROL_ST          BIT(0)
+#define EQOS_TX_DESC_STRIDE                 32
+#define EQOS_TDES2_IOC                      BIT(31)
+#define EQOS_TDES3_OWN                      BIT(31)
+#define EQOS_TDES3_FD                       BIT(29)
+#define EQOS_TDES3_LD                       BIT(28)
+#define EQOS_TDES3_FL_MASK                  0x7fff
 
 static const uint32_t npcm_gmac_cold_reset_values[NPCM_GMAC_NR_REGS] = {
     /* Reduce version to 3.2 so that the kernel can enable interrupt. */
@@ -636,6 +656,89 @@ static void gmac_try_send_next_packet(NPCMGMACState *gmac)
     }
 }
 
+static void eqos_try_send_packets(NPCMGMACState *gmac)
+{
+    uint32_t list_addr =
+        gmac->regs[R_EQOS_DMA_CH0_TXDESC_LIST_ADDRESS];
+    uint32_t tail_addr =
+        gmac->regs[R_EQOS_DMA_CH0_TXDESC_TAIL_POINTER];
+    uint32_t desc_addr =
+        gmac->regs[R_EQOS_DMA_CH0_CURRENT_APP_TXDESC];
+    uint32_t ring_len =
+        (gmac->regs[R_EQOS_DMA_CH0_TXDESC_RING_LENGTH] & 0xffff) + 1;
+    uint32_t ring_end;
+
+    if (!(gmac->regs[R_EQOS_DMA_CH0_TX_CONTROL] &
+          EQOS_DMA_CH0_TX_CONTROL_ST)) {
+        return;
+    }
+
+    if (!list_addr || !tail_addr || !ring_len) {
+        return;
+    }
+
+    if (!desc_addr) {
+        desc_addr = list_addr;
+    }
+
+    ring_end = list_addr + ring_len * EQOS_TX_DESC_STRIDE;
+
+    while (desc_addr != tail_addr) {
+        g_autofree uint8_t *tx_send_buffer = NULL;
+        struct NPCMGMACTxDesc desc;
+        uint32_t length;
+
+        if (gmac_read_tx_desc(desc_addr, &desc)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: EQOS TX descriptor @ 0x%x can't be read\n",
+                          DEVICE(gmac)->canonical_path, desc_addr);
+            return;
+        }
+
+        trace_npcm_gmac_packet_desc_read(DEVICE(gmac)->canonical_path,
+                                         desc_addr);
+        trace_npcm_gmac_debug_desc_data(DEVICE(gmac)->canonical_path, &desc,
+                                        desc.tdes0, desc.tdes1,
+                                        desc.tdes2, desc.tdes3);
+
+        if (!(desc.tdes3 & EQOS_TDES3_OWN)) {
+            break;
+        }
+
+        length = desc.tdes3 & EQOS_TDES3_FL_MASK;
+        if ((desc.tdes3 & (EQOS_TDES3_FD | EQOS_TDES3_LD)) ==
+            (EQOS_TDES3_FD | EQOS_TDES3_LD) && length > 0) {
+            tx_send_buffer = g_malloc(length);
+            if (dma_memory_read(&address_space_memory, desc.tdes0,
+                                tx_send_buffer, length,
+                                MEMTXATTRS_UNSPECIFIED)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "%s: Failed to read EQOS packet @ 0x%x\n",
+                              __func__, desc.tdes0);
+                return;
+            }
+
+            qemu_send_packet(qemu_get_queue(gmac->nic), tx_send_buffer,
+                             length);
+            trace_npcm_gmac_packet_sent(DEVICE(gmac)->canonical_path,
+                                        length);
+        }
+
+        desc.tdes3 &= ~EQOS_TDES3_OWN;
+        if (desc.tdes2 & EQOS_TDES2_IOC) {
+            gmac->regs[R_NPCM_DMA_STATUS] |= NPCM_DMA_STATUS_TI;
+            gmac_update_irq(gmac);
+        }
+        gmac_write_tx_desc(desc_addr, &desc);
+
+        desc_addr += EQOS_TX_DESC_STRIDE;
+        if (desc_addr >= ring_end) {
+            desc_addr = list_addr;
+        }
+        gmac->regs[R_EQOS_DMA_CH0_CURRENT_APP_TXDESC] = desc_addr;
+    }
+}
+
 static void gmac_cleanup(NetClientState *nc)
 {
     /* Nothing to do yet. */
@@ -711,9 +814,11 @@ static uint64_t npcm_gmac_read(void *opaque, hwaddr offset, unsigned size)
     /* Write only registers */
     case A_NPCM_DMA_XMT_POLL_DEMAND:
     case A_NPCM_DMA_RCV_POLL_DEMAND:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Read of write-only reg: offset: 0x%04" HWADDR_PRIx
-                      "\n", DEVICE(gmac)->canonical_path, offset);
+        /*
+         * Some bare-metal drivers harmlessly read poll-demand registers while
+         * dumping or preserving DMA state. Treat them as zero instead of
+         * raising noisy guest errors.
+         */
         break;
 
     default:
@@ -750,6 +855,7 @@ static void npcm_gmac_write(void *opaque, hwaddr offset,
     case A_NPCM_DMA_HOST_RX_DESC:
     case A_NPCM_DMA_CUR_TX_BUF_ADDR:
     case A_NPCM_DMA_CUR_RX_BUF_ADDR:
+    case A_EQOS_DMA_CH0_CURRENT_APP_TXDESC:
     case A_NPCM_DMA_HW_FEATURE:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: Write of read-only reg: offset: 0x%04" HWADDR_PRIx
@@ -807,6 +913,27 @@ static void npcm_gmac_write(void *opaque, hwaddr offset,
     case A_NPCM_DMA_XMT_POLL_DEMAND:
         /* We dont actually care about the value */
         gmac_try_send_next_packet(gmac);
+        break;
+
+    case A_EQOS_DMA_CH0_TX_CONTROL:
+        gmac->regs[offset / sizeof(uint32_t)] = v;
+        eqos_try_send_packets(gmac);
+        break;
+
+    case A_EQOS_DMA_CH0_TXDESC_TAIL_POINTER:
+        gmac->regs[offset / sizeof(uint32_t)] = v;
+        eqos_try_send_packets(gmac);
+        break;
+
+    case A_EQOS_DMA_CH0_CONTROL:
+    case A_EQOS_DMA_CH0_RX_CONTROL:
+    case A_EQOS_DMA_CH0_TXDESC_LIST_ADDRESS:
+    case A_EQOS_DMA_CH0_RXDESC_LIST_ADDRESS:
+    case A_EQOS_DMA_CH0_RXDESC_TAIL_POINTER:
+    case A_EQOS_DMA_CH0_TXDESC_RING_LENGTH:
+    case A_EQOS_DMA_CH0_RXDESC_RING_LENGTH:
+    case A_EQOS_DMA_CH0_INTERRUPT_ENABLE:
+        gmac->regs[offset / sizeof(uint32_t)] = v;
         break;
 
     case A_NPCM_DMA_CONTROL:
@@ -890,7 +1017,7 @@ static void npcm_gmac_realize(DeviceState *dev, Error **errp)
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
 
     memory_region_init_io(&gmac->iomem, OBJECT(gmac), &npcm_gmac_ops, gmac,
-                          TYPE_NPCM_GMAC, 8 * KiB);
+                          TYPE_NPCM_GMAC, NPCM_GMAC_REG_SIZE);
     sysbus_init_mmio(sbd, &gmac->iomem);
     sysbus_init_irq(sbd, &gmac->irq);
 

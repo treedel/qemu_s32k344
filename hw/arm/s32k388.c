@@ -40,8 +40,12 @@ static uint64_t s32k388_boot_status_read(void *opaque, hwaddr offset, unsigned s
 }
 
 static void s32k388_boot_status_write(void *opaque, hwaddr offset, uint64_t value, unsigned size) {
-    qemu_log_mask(LOG_UNIMP,
-                  "s32k388.boot-status: unimplemented write "
+    if (size == 4 && offset + size <= S32K3_BOOT_STATUS_SIZE) {
+        return;
+    }
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "s32k388.boot-status: invalid write "
                   "(size %u, offset 0x%" HWADDR_PRIx ", value 0x%" PRIx64 ")\n",
                   size, offset, value);
 }
@@ -108,6 +112,36 @@ static const MemoryRegionOps s32k388_mc_me_ops = {
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,
 };
+
+static uint64_t s32k388_zero_read(void *opaque, hwaddr offset, unsigned size)
+{
+    return 0;
+}
+
+static void s32k388_zero_write(void *opaque, hwaddr offset,
+                               uint64_t value, unsigned size)
+{
+}
+
+static const MemoryRegionOps s32k388_zero_ops = {
+    .read = s32k388_zero_read,
+    .write = s32k388_zero_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+};
+
+static void s32k388_add_zero_stub(MemoryRegion *system_memory,
+                                  MemoryRegion *mr,
+                                  const char *name,
+                                  hwaddr base,
+                                  hwaddr size)
+{
+    memory_region_init_io(mr, NULL, &s32k388_zero_ops, NULL, name, size);
+    memory_region_add_subregion_overlap(system_memory, base, mr, 1);
+}
 
 static void s32k388_init_flexcan(S32K388State *s, ARMv7MState *armv7m) {
     static const hwaddr flexcan_bases[S32K388_CAN_COUNT] = {
@@ -286,6 +320,18 @@ static void s32k388_init(MachineState* machine) {
 
     // Map any missing S32K3 peripheral region used by firmware
     create_unimplemented_device("s32k3x8.peripherals", S32K3_PERIPH_BASE, 16 * MiB);
+    s32k388_add_zero_stub(system_memory, &s->mscm, "s32k388.mscm",
+                          S32K3_MSCM_BASE, S32K3_MSCM_SIZE);
+    s32k388_add_zero_stub(system_memory, &s->swt0, "s32k388.swt0",
+                          S32K3_SWT0_BASE, S32K3_SWT0_SIZE);
+    s32k388_add_zero_stub(system_memory, &s->rtc, "s32k388.rtc",
+                          S32K3_RTC_BASE, S32K3_RTC_SIZE);
+    s32k388_add_zero_stub(system_memory, &s->mc_rgm, "s32k388.mc_rgm",
+                          S32K3_MC_RGM_BASE, S32K3_MC_RGM_SIZE);
+    s32k388_add_zero_stub(system_memory, &s->dcm, "s32k388.dcm",
+                          S32K3_DCM_BASE, S32K3_DCM_SIZE);
+    s32k388_add_zero_stub(system_memory, &s->sxosc, "s32k388.sxosc",
+                          S32K3_SXOSC_BASE, S32K3_SXOSC_SIZE);
     memory_region_init_io(&s->mc_me, NULL, &s32k388_mc_me_ops, s,
                           "s32k388.mc_me", S32K3_MC_ME_SIZE);
     memory_region_add_subregion_overlap(system_memory, S32K3_MC_ME_BASE,

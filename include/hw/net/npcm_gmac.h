@@ -24,7 +24,7 @@
 #include "hw/core/sysbus.h"
 #include "net/net.h"
 
-#define NPCM_GMAC_REG_SIZE 0x1060
+#define NPCM_GMAC_REG_SIZE 0x4000
 #define NPCM_GMAC_NR_REGS (NPCM_GMAC_REG_SIZE / sizeof(uint32_t))
 
 #define NPCM_GMAC_MAX_PHYS 32
