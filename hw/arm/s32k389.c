@@ -12,6 +12,15 @@
 #include "hw/char/s32k3_uart.h"
 #include "hw/net/s32k3_flexcan.h"
 #include "hw/char/s32k3_flexio_uart.h"
+#include "hw/ssi/s32k3_lpspi.h"
+#include "hw/i2c/s32k3_lpi2c.h"
+#include "hw/watchdog/s32k3_swt.h"
+#include "hw/misc/s32k3_crc.h"
+#include "hw/adc/s32k3_adc.h"
+#include "hw/timer/s32k3_emios.h"
+#include "hw/dma/s32k3_edma.h"
+#include "hw/net/npcm_gmac.h"
+#include "hw/ssi/s32k3_qspi.h"
 #include "hw/arm/boot.h"
 #include "hw/arm/machines-qom.h"
 #include "hw/core/qdev-properties.h"
@@ -120,7 +129,132 @@ static const MemoryRegionOps s32k389_clkgen_ops = {
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,
 };
- 
+
+/*
+ * STCU2 (Self-Test Control Unit) minimal stub - see the S32K3_STCU2_BASE
+ * comment in the header for scope/caveats. Offsets are our own choice
+ * (not manual-verified): 0x0 = BSTART (self-test start pulses, read back
+ * as always-idle/complete), 0x4 = ALGOSEL (algorithm select, plain
+ * storage), 0x8 = a synthetic "lockstep/self-test status" word that
+ * always reports all 4 cores present, decoupled (split-lock), and the
+ * last self-test as passed - there is no real BIST/LBIST/MBIST engine
+ * behind this.
+ */
+#define S32K389_STCU2_BSTART  0x0
+#define S32K389_STCU2_ALGOSEL 0x4
+#define S32K389_STCU2_STATUS  0x8
+#define S32K389_STCU2_STATUS_VALUE 0x0000000Fu /* 4 cores, self-test pass */
+
+static uint64_t s32k389_stcu2_read(void *opaque, hwaddr offset, unsigned size)
+{
+    S32K389State *s = opaque;
+
+    switch (offset) {
+    case S32K389_STCU2_BSTART:
+        return s->stcu2_bstart;
+    case S32K389_STCU2_ALGOSEL:
+        return s->stcu2_algosel;
+    case S32K389_STCU2_STATUS:
+        return S32K389_STCU2_STATUS_VALUE;
+    default:
+        return 0;
+    }
+}
+
+static void s32k389_stcu2_write(void *opaque, hwaddr offset,
+                                uint64_t value, unsigned size)
+{
+    S32K389State *s = opaque;
+
+    switch (offset) {
+    case S32K389_STCU2_BSTART:
+        /* Real BSTART pulses trigger a BIST run and self-clear; since
+         * there's no BIST engine here, just store it (harmless echo). */
+        s->stcu2_bstart = value;
+        break;
+    case S32K389_STCU2_ALGOSEL:
+        s->stcu2_algosel = value;
+        break;
+    case S32K389_STCU2_STATUS:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "s32k389.stcu2: status word is read-only\n");
+        break;
+    default:
+        break;
+    }
+}
+
+static const MemoryRegionOps s32k389_stcu2_ops = {
+    .read = s32k389_stcu2_read,
+    .write = s32k389_stcu2_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 4,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+};
+
+/*
+ * Additional Cortex-M7 core (CM7_1/CM7_2/CM7_3) - see S32K389_NUM_CORES
+ * comment in the header. Each gets its own private ITCM/DTCM at the same
+ * local addresses core 0 uses (0x0 / 0x2000_0000), overlaid on a
+ * per-core alias of the shared system bus so flash/SRAM/peripherals are
+ * still visible identically to core 0, and its own reset handler via
+ * armv7m_load_kernel(..., NULL, ...) (kernel_filename is NULL - the
+ * shared flash image was already loaded once by core 0's call).
+ */
+static void s32k389_init_extra_core(S32K389State *s, MemoryRegion *system_memory,
+                                     ARMv7MState *core, MemoryRegion *core_mem,
+                                     MemoryRegion *itcm, MemoryRegion *dtcm,
+                                     MemoryRegion *dtcm_stack,
+                                     const char *name_prefix, int core_num)
+{
+    Error *local_err = NULL;
+    char name[64];
+
+    snprintf(name, sizeof(name), "%s.mem", name_prefix);
+    memory_region_init_alias(core_mem, OBJECT(s), name, system_memory,
+                             0, UINT32_MAX);
+
+    snprintf(name, sizeof(name), "%s.itcm", name_prefix);
+    memory_region_init_ram(itcm, NULL, name, INT_ITCM_SIZE, &error_fatal);
+    memory_region_add_subregion_overlap(core_mem, INT_ITCM_BASE, itcm, 1);
+
+    snprintf(name, sizeof(name), "%s.dtcm", name_prefix);
+    memory_region_init_ram(dtcm, NULL, name, INT_DTCM_SIZE, &error_fatal);
+    memory_region_add_subregion_overlap(core_mem, INT_DTCM_BASE, dtcm, 1);
+
+    snprintf(name, sizeof(name), "%s.dtcm_stack", name_prefix);
+    memory_region_init_ram(dtcm_stack, NULL, name, INT_DTCM_STACK_SIZE,
+                           &error_fatal);
+    memory_region_add_subregion_overlap(core_mem, INT_DTCM_STACK_BASE,
+                                        dtcm_stack, 1);
+
+    object_initialize_child(OBJECT(s), name_prefix, core, TYPE_ARMV7M);
+    qdev_prop_set_string(DEVICE(core), "cpu-type", ARM_CPU_TYPE_NAME("cortex-m7"));
+    qdev_prop_set_uint32(DEVICE(core), "init-svtor", INT_CODE_FLASH0_CORE0_VTOR);
+    qdev_prop_set_uint32(DEVICE(core), "init-nsvtor", INT_CODE_FLASH0_CORE0_VTOR);
+    qdev_prop_set_uint32(DEVICE(core), "mpu-ns-regions", 0);
+    qdev_prop_set_uint32(DEVICE(core), "mpu-s-regions", 0);
+    qdev_prop_set_uint8(DEVICE(core), "num-prio-bits", 4);
+    qdev_prop_set_uint32(DEVICE(core), "num-irq", 240);
+
+    object_property_set_link(OBJECT(core), "memory", OBJECT(core_mem), &error_abort);
+    qdev_connect_clock_in(DEVICE(core), "cpuclk", s->sysclk);
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(core), &local_err)) {
+        error_reportf_err(local_err, "Failed to realize core %d: ", core_num);
+        return;
+    }
+
+    /* kernel_filename=NULL: the shared flash image was already loaded by
+     * core 0; this call's real job is registering this CPU's own
+     * qemu_register_reset() handler, which every M-profile CPU needs. */
+    armv7m_load_kernel(core->cpu, NULL, INT_CODE_FLASH0_BASE, FLASH_SIZE);
+
+    qemu_log_mask(CPU_LOG_INT, "Core %d (%s) initialized\n", core_num, name_prefix);
+}
+
 static void s32k389_init_flexcan(S32K389State *s, ARMv7MState *armv7m) {
     /*
      * Addresses verified against S32K3xx_memory_map.xlsx (Peripherals sheet,
@@ -191,6 +325,342 @@ static void s32k389_init_flexcan(S32K389State *s, ARMv7MState *armv7m) {
     qemu_log_mask(CPU_LOG_INT, "FlexCAN instances initialized\n");
 }
  
+static void s32k389_init_lpspi(S32K389State *s, ARMv7MState *armv7m) {
+    /*
+     * Base addresses and IRQs from S32K389.h, verified against
+     * S32K3xx_memory_map.xlsx and S32K3xx_interrupt_map.xlsx (see header
+     * comments next to S32K3_LPSPIn_BASE / S32K3_LPSPIn_IRQ). These 6
+     * struct/property fields existed since the initial S32K389 model but
+     * were never instantiated here - this finishes that.
+     */
+    static const hwaddr lpspi_bases[S32K389_NUM_LPSPI] = {
+        S32K3_LPSPI0_BASE,
+        S32K3_LPSPI1_BASE,
+        S32K3_LPSPI2_BASE,
+        S32K3_LPSPI3_BASE,
+        S32K3_LPSPI4_BASE,
+        S32K3_LPSPI5_BASE,
+    };
+    static const int lpspi_irqs[S32K389_NUM_LPSPI] = {
+        S32K3_LPSPI0_IRQ,
+        S32K3_LPSPI1_IRQ,
+        S32K3_LPSPI2_IRQ,
+        S32K3_LPSPI3_IRQ,
+        S32K3_LPSPI4_IRQ,
+        S32K3_LPSPI5_IRQ,
+    };
+    Error *local_err = NULL;
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing LPSPI instances\n");
+
+    for (int i = 0; i < S32K389_NUM_LPSPI; i++) {
+        DeviceState *dev = qdev_new(TYPE_S32K3_LPSPI);
+        s->lpspi[i] = dev;
+
+        qdev_prop_set_uint32(dev, "lpspi-id", i);
+
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+            error_reportf_err(local_err, "Failed to realize LPSPI instance %d: ", i);
+            return;
+        }
+
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, lpspi_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                            qdev_get_gpio_in(DEVICE(armv7m), lpspi_irqs[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "LPSPI instances initialized\n");
+}
+
+static void s32k389_init_lpi2c(S32K389State *s, ARMv7MState *armv7m) {
+    /*
+     * Base addresses verified against S32K3xx Reference Manual section
+     * 71.7.1.1 "LPI2C memory map". IRQ numbers are an unverified
+     * placeholder - see the S32K3_LPI2Cn_IRQ comments in the header.
+     */
+    static const hwaddr lpi2c_bases[S32K389_NUM_LPI2C] = {
+        S32K3_LPI2C0_BASE,
+        S32K3_LPI2C1_BASE,
+    };
+    static const int lpi2c_irqs[S32K389_NUM_LPI2C] = {
+        S32K3_LPI2C0_IRQ,
+        S32K3_LPI2C1_IRQ,
+    };
+    Error *local_err = NULL;
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing LPI2C instances\n");
+
+    for (int i = 0; i < S32K389_NUM_LPI2C; i++) {
+        DeviceState *dev = qdev_new(TYPE_S32K3_LPI2C);
+        s->lpi2c[i] = dev;
+
+        qdev_prop_set_uint32(dev, "lpi2c-id", i);
+
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+            error_reportf_err(local_err, "Failed to realize LPI2C instance %d: ", i);
+            return;
+        }
+
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, lpi2c_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                            qdev_get_gpio_in(DEVICE(armv7m), lpi2c_irqs[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "LPI2C instances initialized\n");
+}
+
+static void s32k389_init_swt(S32K389State *s, ARMv7MState *armv7m) {
+    /*
+     * Base addresses verified against S32K3xx Reference Manual section
+     * 66.6.1 "SWT memory map". IRQ numbers are an unverified placeholder -
+     * see the S32K3_SWTn_IRQ comments in the header.
+     */
+    static const hwaddr swt_bases[S32K389_NUM_SWT] = {
+        S32K3_SWT0_BASE,
+        S32K3_SWT1_BASE,
+        S32K3_SWT2_BASE,
+        S32K3_SWT3_BASE,
+    };
+    static const int swt_irqs[S32K389_NUM_SWT] = {
+        S32K3_SWT0_IRQ,
+        S32K3_SWT1_IRQ,
+        S32K3_SWT2_IRQ,
+        S32K3_SWT3_IRQ,
+    };
+    Error *local_err = NULL;
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing SWT instances\n");
+
+    for (int i = 0; i < S32K389_NUM_SWT; i++) {
+        DeviceState *dev = qdev_new(TYPE_S32K3_SWT);
+        s->swt[i] = dev;
+
+        qdev_prop_set_uint32(dev, "swt-id", i);
+
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+            error_reportf_err(local_err, "Failed to realize SWT instance %d: ", i);
+            return;
+        }
+
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, swt_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                            qdev_get_gpio_in(DEVICE(armv7m), swt_irqs[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "SWT instances initialized\n");
+}
+
+static void s32k389_init_adc(S32K389State *s, ARMv7MState *armv7m) {
+    /*
+     * Base addresses verified against S32K3xx Reference Manual section
+     * 60.6.2.1 "ADC memory map". IRQ numbers are an unverified placeholder
+     * - see the S32K3_ADCn_IRQ comments in the header.
+     */
+    static const hwaddr adc_bases[S32K389_NUM_ADC] = {
+        S32K3_ADC0_BASE,
+        S32K3_ADC1_BASE,
+        S32K3_ADC2_BASE,
+    };
+    static const int adc_irqs[S32K389_NUM_ADC] = {
+        S32K3_ADC0_IRQ,
+        S32K3_ADC1_IRQ,
+        S32K3_ADC2_IRQ,
+    };
+    Error *local_err = NULL;
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing ADC instances\n");
+
+    for (int i = 0; i < S32K389_NUM_ADC; i++) {
+        DeviceState *dev = qdev_new(TYPE_S32K3_ADC);
+        s->adc[i] = dev;
+
+        qdev_prop_set_uint32(dev, "adc-id", i);
+
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+            error_reportf_err(local_err, "Failed to realize ADC instance %d: ", i);
+            return;
+        }
+
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, adc_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                            qdev_get_gpio_in(DEVICE(armv7m), adc_irqs[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "ADC instances initialized\n");
+}
+
+static void s32k389_init_emios(S32K389State *s, ARMv7MState *armv7m) {
+    /*
+     * Base addresses verified against S32K3xx Reference Manual section
+     * 63.8.6.1 "eMIOS memory map". IRQ numbers are an unverified
+     * placeholder - see the S32K3_EMIOSn_IRQ comments in the header.
+     */
+    static const hwaddr emios_bases[S32K389_NUM_EMIOS] = {
+        S32K3_EMIOS0_BASE,
+        S32K3_EMIOS1_BASE,
+        S32K3_EMIOS2_BASE,
+    };
+    static const int emios_irqs[S32K389_NUM_EMIOS] = {
+        S32K3_EMIOS0_IRQ,
+        S32K3_EMIOS1_IRQ,
+        S32K3_EMIOS2_IRQ,
+    };
+    Error *local_err = NULL;
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing eMIOS instances\n");
+
+    for (int i = 0; i < S32K389_NUM_EMIOS; i++) {
+        DeviceState *dev = qdev_new(TYPE_S32K3_EMIOS);
+        s->emios[i] = dev;
+
+        qdev_prop_set_uint32(dev, "emios-id", i);
+
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+            error_reportf_err(local_err, "Failed to realize eMIOS instance %d: ", i);
+            return;
+        }
+
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, emios_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                            qdev_get_gpio_in(DEVICE(armv7m), emios_irqs[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "eMIOS instances initialized\n");
+}
+
+static void s32k389_init_edma(S32K389State *s, ARMv7MState *armv7m) {
+    /*
+     * Base addresses verified against S32K3xx Reference Manual sections
+     * 15.6.1.1 (management page) and 15.6.2.1 (TCD/channel page). IRQ
+     * numbers are an unverified placeholder - see the
+     * S32K3_EDMA_IRQ_BASE comment in the header.
+     */
+    Error *local_err = NULL;
+    DeviceState *dev = qdev_new(TYPE_S32K3_EDMA);
+
+    s->edma = dev;
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing eDMA\n");
+
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+        error_reportf_err(local_err, "Failed to realize eDMA: ");
+        return;
+    }
+
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_EDMA_MGMT_BASE);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, S32K3_EDMA_CH_BASE);
+
+    for (int i = 0; i < S32K3_EDMA_NUM_CHANNELS; i++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), i,
+                            qdev_get_gpio_in(DEVICE(armv7m),
+                                             S32K3_EDMA_IRQ_BASE + i));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "eDMA initialized\n");
+}
+
+static void s32k389_init_gmac(S32K389State *s, MachineState *machine)
+{
+    /*
+     * Base addresses/instance count reused from the already-verified
+     * S32K388 GMAC model on the strength of the manual grouping both
+     * chips together for this peripheral - see S32K389_GMAC0_BASE
+     * comment in the header.
+     */
+    static const hwaddr gmac_bases[S32K389_GMAC_COUNT] = {
+        S32K389_GMAC0_BASE,
+        S32K389_GMAC1_BASE,
+    };
+    static const int gmac_irqs[S32K389_GMAC_COUNT] = {
+        S32K389_GMAC0_IRQ,
+        S32K389_GMAC1_IRQ,
+    };
+    char name[16];
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing GMAC Ethernet instances\n");
+
+    for (int i = 0; i < S32K389_GMAC_COUNT; i++) {
+        snprintf(name, sizeof(name), "gmac%d", i);
+        object_initialize_child(OBJECT(machine), name, &s->gmac[i],
+                                TYPE_NPCM_GMAC);
+
+        qemu_configure_nic_device(DEVICE(&s->gmac[i]), true, NULL);
+        sysbus_realize(SYS_BUS_DEVICE(&s->gmac[i]), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(&s->gmac[i]), 0, gmac_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->gmac[i]), 0,
+                           qdev_get_gpio_in(DEVICE(&s->armv7m),
+                                            gmac_irqs[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "GMAC Ethernet instances initialized\n");
+}
+
+static void s32k389_init_qspi(S32K389State *s, ARMv7MState *armv7m) {
+    /*
+     * Controller base verified against manual section 80.13.2.1; ARDB
+     * base against section 80.13.4.1. IRQ is an unverified placeholder -
+     * see the S32K3_QSPI_IRQ comment in the header.
+     */
+    Error *local_err = NULL;
+    DeviceState *dev = qdev_new(TYPE_S32K3_QSPI);
+
+    s->qspi = dev;
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing QuadSPI\n");
+
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+        error_reportf_err(local_err, "Failed to realize QuadSPI: ");
+        return;
+    }
+
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_QSPI_BASE);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 1, S32K3_QSPI_ARDB_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                        qdev_get_gpio_in(DEVICE(armv7m), S32K3_QSPI_IRQ));
+
+    qemu_log_mask(CPU_LOG_INT, "QuadSPI initialized\n");
+}
+
+static void s32k389_init_sai(S32K389State *s, ARMv7MState *armv7m) {
+    /*
+     * Base addresses verified against manual section 74.6.1.1 "SAI memory
+     * map". PARAM reset values differ per-instance (4 vs 1 data lines) -
+     * see the S32K389_NUM_SAI comment in the header. IRQ numbers are
+     * unverified placeholders - see the S32K3_SAI0_IRQ comment.
+     */
+    static const hwaddr sai_bases[S32K389_NUM_SAI] = {
+        S32K3_SAI0_BASE, S32K3_SAI1_BASE,
+    };
+    static const uint32_t sai_param_resets[S32K389_NUM_SAI] = {
+        S32K3_SAI0_PARAM_RESET, S32K3_SAI1_PARAM_RESET,
+    };
+    static const int sai_irqs[S32K389_NUM_SAI] = {
+        S32K3_SAI0_IRQ, S32K3_SAI1_IRQ,
+    };
+    Error *local_err = NULL;
+    int i;
+
+    qemu_log_mask(CPU_LOG_INT, "Initializing SAI\n");
+
+    for (i = 0; i < S32K389_NUM_SAI; i++) {
+        DeviceState *dev = qdev_new(TYPE_S32K3_SAI);
+
+        s->sai[i] = dev;
+        qdev_prop_set_uint32(dev, "param-reset", sai_param_resets[i]);
+
+        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+            error_reportf_err(local_err, "Failed to realize SAI%d: ", i);
+            return;
+        }
+
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, sai_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                            qdev_get_gpio_in(DEVICE(armv7m), sai_irqs[i]));
+    }
+
+    qemu_log_mask(CPU_LOG_INT, "SAI instances initialized\n");
+}
+
 static void s32k389_init(MachineState* machine) {
     S32K389State* s = S32K389(machine);
     Error* error_local = NULL;
@@ -297,6 +767,29 @@ static void s32k389_init(MachineState* machine) {
  
     // Initialize FlexCAN devices
     s32k389_init_flexcan(s, &s->armv7m);
+
+    // Initialize LPSPI devices
+    s32k389_init_lpspi(s, &s->armv7m);
+
+    // Initialize LPI2C devices
+    s32k389_init_lpi2c(s, &s->armv7m);
+
+    // Initialize SWT (watchdog) devices
+    s32k389_init_swt(s, &s->armv7m);
+
+    // Initialize CRC device (no interrupt line, manual 58.3.6)
+    dev = qdev_new(TYPE_S32K3_CRC);
+    s->crc = dev;
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_local);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_CRC_BASE);
+
+    // Initialize ADC devices
+    s32k389_init_adc(s, &s->armv7m);
+    s32k389_init_emios(s, &s->armv7m);
+    s32k389_init_edma(s, &s->armv7m);
+    s32k389_init_gmac(s, machine);
+    s32k389_init_qspi(s, &s->armv7m);
+    s32k389_init_sai(s, &s->armv7m);
  
     // Map any missing S32K3 peripheral region used by firmware
     create_unimplemented_device("s32k3x8.peripherals", S32K3_PERIPH_BASE, 16 * MiB);
@@ -313,23 +806,51 @@ static void s32k389_init(MachineState* machine) {
                           "s32k389.mc_me", S32K3_MC_ME_SIZE);
     memory_region_add_subregion_overlap(system_memory, S32K3_MC_ME_BASE,
                                         &s->mc_me, 1);
- 
+
+    // STCU2 (Self-Test Control Unit) minimal stub - see S32K3_STCU2_BASE
+    // comment in the header. UNVERIFIED PLACEHOLDER base address.
+    memory_region_init_io(&s->stcu2, NULL, &s32k389_stcu2_ops, s,
+                          "s32k389.stcu2", S32K3_STCU2_SIZE);
+    memory_region_add_subregion_overlap(system_memory, S32K3_STCU2_BASE,
+                                        &s->stcu2, 1);
+
     // Enabling semihosting for guest BKPT operations
     qemu_semihosting_enable();
- 
+
     // Load firmware - FLASH_SIZE covers the full 12MB contiguous flash
     // region (flash0-flash7), not just the first block, since firmware can
     // legitimately span multiple physical flash blocks.
     armv7m_load_kernel(s->armv7m.cpu, machine->kernel_filename, INT_CODE_FLASH0_BASE, FLASH_SIZE);
+
+    // Cores 1-3 (CM7_1/CM7_2/CM7_3) - see S32K389_NUM_CORES comment in
+    // the header. Each gets its own private ITCM/DTCM and its own
+    // qemu_register_reset() handler; they all share the same flash image
+    // core 0 just loaded above.
+    s32k389_init_extra_core(s, system_memory, &s->core1, &s->core1_mem,
+                            &s->core1_itcm, &s->core1_dtcm,
+                            &s->core1_dtcm_stack, "core1", 1);
+    s32k389_init_extra_core(s, system_memory, &s->core2, &s->core2_mem,
+                            &s->core2_itcm, &s->core2_dtcm,
+                            &s->core2_dtcm_stack, "core2", 2);
+    s32k389_init_extra_core(s, system_memory, &s->core3, &s->core3_mem,
+                            &s->core3_itcm, &s->core3_dtcm,
+                            &s->core3_dtcm_stack, "core3", 3);
 }
  
 static void s32k389_class_init(ObjectClass* oc, const void* data) {
     MachineClass* mc = MACHINE_CLASS(oc);
     mc->desc = "NXP S32K389 Development Board (Cortex-M7)";
     mc->init = s32k389_init;
-    mc->default_cpus = 1;
-    mc->min_cpus = 1;
-    mc->max_cpus = 1;
+    /* 4 Cortex-M7 cores are unconditionally created in s32k389_init()
+     * (not driven by -smp) - see S32K389_NUM_CORES in the header. These
+     * fields still must reflect the true CPU count: TCG sizes its
+     * per-thread context pool from machine->smp.max_cpus at startup
+     * regardless of how the CPU objects were created, and leaving this
+     * at 1 causes "tcg_register_thread: assertion failed: (n <
+     * tcg_max_ctxs)" once cores 1-3 spin up their own TCG threads. */
+    mc->default_cpus = S32K389_NUM_CORES;
+    mc->min_cpus = S32K389_NUM_CORES;
+    mc->max_cpus = S32K389_NUM_CORES;
     mc->default_ram_size = SRAM_SIZE;
 }
  

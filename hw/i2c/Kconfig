@@ -6,6 +6,10 @@ config I2C_DEVICES
     # to any board's i2c bus
     bool
 
+config S32K3_LPI2C
+    bool
+    select I2C
+
 config SMBUS
     bool
     select I2C
