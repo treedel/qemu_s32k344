@@ -4,9 +4,18 @@ set -euo pipefail
 MACHINE_TYPE="s32k389"
 KERNEL_PATH="${1:-}"
 DEBUG_PARAMS="${2:-}"
+DEBUG_ARGS=()
 
 if [ -z "$DEBUG_PARAMS" ]; then
     DEBUG_PARAMS="guest_errors"
+fi
+
+if [ "$DEBUG_PARAMS" = "debug" ] || [ "$DEBUG_PARAMS" = "gdb" ]; then
+    DEBUG_ARGS=(-S -gdb tcp::1234)
+    DEBUG_PARAMS="guest_errors"
+    echo "Starting QEMU in GDB-stopped mode"
+else
+    echo "Starting QEMU normally"
 fi
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]:-$0}" )" &> /dev/null && pwd )"
@@ -23,18 +32,28 @@ if [ ! -x "$QEMU_BIN" ]; then
 fi
 
 CAN_ARGS=()
-if command -v ip >/dev/null 2>&1 && ip link show vcan0 >/dev/null 2>&1; then
-    CAN_ARGS=(
-        -object can-bus,id=canbus0
-        -object can-host-socketcan,id=socketcan0,if=vcan0,canbus=canbus0
-        -machine canbus0=canbus0
-    )
+if command -v ip >/dev/null 2>&1; then
+    if ! ip link show vcan0 >/dev/null 2>&1; then
+        if ! ip link add dev vcan0 type vcan; then
+            echo "Unable to create vcan0; using an internal QEMU CAN bus"
+        else
+            echo "Created SocketCAN interface vcan0"
+        fi
+    fi
 
-    echo "vcan0 unavailable; using an internal QEMU CAN bus"
+    if ip link show vcan0 >/dev/null 2>&1; then
+        ip link set up vcan0 >/dev/null 2>&1 || true
+
+        CAN_ARGS=(
+            -object can-bus,id=canbus0
+            -object can-host-socketcan,id=socketcan0,if=vcan0,canbus=canbus0
+            -machine canbus0=canbus0
+        )
+
+        echo "Using SocketCAN interface vcan0 for QEMU CAN traffic"
+    fi
 else
-    #ip link add dev vcan0 type vcan
-    #ip link set up vcan0
-    echo "SocketCAN interface vcan0 not available; launching without CAN support"
+    echo "ip command not available; using an internal QEMU CAN bus"
 fi
 
 # Launch selected QEMU
@@ -43,7 +62,6 @@ exec "$QEMU_BIN" \
   -kernel "$KERNEL_PATH" \
   -nographic \
   -serial mon:stdio \
-  -S \
-  -gdb tcp::1234 \
+  "${DEBUG_ARGS[@]}" \
   "${CAN_ARGS[@]}" \
   -d "$DEBUG_PARAMS"

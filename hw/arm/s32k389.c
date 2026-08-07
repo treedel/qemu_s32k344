@@ -131,6 +131,52 @@ static const MemoryRegionOps s32k389_clkgen_ops = {
 };
 
 /*
+ * MSCM minimal model.
+ *
+ * NXP startup code reads CPXTYPE at 0x04 for the current core ID and a
+ * TCM-mode word at 0x14 when choosing lockstep vs split-lock TCM bounds.
+ */
+static uint64_t s32k389_mscm_read(void *opaque, hwaddr offset, unsigned size)
+{
+    if (offset + size > S32K3_MSCM_SIZE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "s32k389.mscm: invalid read size %u @0x%"
+                      HWADDR_PRIx "\n", size, offset);
+        return 0;
+    }
+
+    switch (offset) {
+    case 0x04:
+        return current_cpu ? (current_cpu->cpu_index & 0x7) : 0;
+    case 0x14:
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+static void s32k389_mscm_write(void *opaque, hwaddr offset,
+                               uint64_t value, unsigned size)
+{
+    if (offset + size > S32K3_MSCM_SIZE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "s32k389.mscm: invalid write size %u @0x%"
+                      HWADDR_PRIx " (value 0x%" PRIx64 ")\n",
+                      size, offset, value);
+    }
+}
+
+static const MemoryRegionOps s32k389_mscm_ops = {
+    .read = s32k389_mscm_read,
+    .write = s32k389_mscm_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+};
+
+/*
  * STCU2 (Self-Test Control Unit) minimal stub - see the S32K3_STCU2_BASE
  * comment in the header for scope/caveats. Offsets are our own choice
  * (not manual-verified): 0x0 = BSTART (self-test start pulses, read back
@@ -793,6 +839,13 @@ static void s32k389_init(MachineState* machine) {
  
     // Map any missing S32K3 peripheral region used by firmware
     create_unimplemented_device("s32k3x8.peripherals", S32K3_PERIPH_BASE, 16 * MiB);
+    // Real MSCM aperture. This must overlay the broad eDMA channel mapping
+    // too, because the older eDMA model exposes all 32 TCD windows as one
+    // contiguous block starting at 0x40210000.
+    memory_region_init_io(&s->mscm, NULL, &s32k389_mscm_ops, s,
+                          "s32k389.mscm", S32K3_MSCM_SIZE);
+    memory_region_add_subregion_overlap(system_memory, S32K3_MSCM_BASE,
+                                        &s->mscm, 2);
     // Generic stub for FIRC/FXOSC/MC_CGM range (0x402D0000-0x402DBFFF, 48KB).
     // Still needs _overlap since it sits inside the 16MiB catch-all above.
     memory_region_init_io(&s->clkgen_stub, NULL, &s32k389_clkgen_ops, s,

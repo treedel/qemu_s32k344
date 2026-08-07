@@ -83,6 +83,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(S32K389State, S32K389)
  
 // Peripheral definitions
 #define S32K3_PERIPH_BASE           0x40000000
+
+// MSCM (Miscellaneous System Control Module), verified against
+// S32K3xx_memory_map.xlsx. Early startup code reads CPXTYPE at offset 0x04
+// for the running core ID and TCM mode at offset 0x14.
+#define S32K3_MSCM_BASE             0x40260000
+#define S32K3_MSCM_SIZE             0x4000
  
 // LPUART
 #define S32K3_UART_BASE             0x40328000
@@ -428,6 +434,7 @@ typedef struct S32K389State {
  
   MemoryRegion mc_me;         // real MC_ME peripheral (0x402DC000, switch-based ops)
   MemoryRegion clkgen_stub;   // generic stub for FIRC/FXOSC/MC_CGM range (0x402D0000)
+  MemoryRegion mscm;          // real MSCM aperture (0x40260000)
   uint32_t clkgen_regs[S32K3_CLKGEN_STUB_SIZE / sizeof(uint32_t)];
 } S32K389State;
  
