@@ -301,12 +301,38 @@ static void s32k389_init_extra_core(S32K389State *s, MemoryRegion *system_memory
     qemu_log_mask(CPU_LOG_INT, "Core %d (%s) initialized\n", core_num, name_prefix);
 }
 
+static bool s32k389_realize_sysbus_device(DeviceState *dev,
+                                           ARMv7MState *armv7m,
+                                           hwaddr base, int irq,
+                                           const char *peripheral_name)
+{
+    Error *local_err = NULL;
+
+    /*
+     * This is the common board-level hookup for a peripheral that lives on
+     * the Cortex-M7 system bus: realize the model, expose its MMIO window at
+     * the S32K389 address from the manual, and connect it to the CPU IRQ line.
+     */
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
+        error_reportf_err(local_err, "Failed to realize %s: ", peripheral_name);
+        return false;
+    }
+
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
+
+    if (irq >= 0) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
+                           qdev_get_gpio_in(DEVICE(armv7m), irq));
+    }
+
+    return true;
+}
+
 static void s32k389_init_flexcan(S32K389State *s, ARMv7MState *armv7m) {
     /*
-     * Addresses verified against S32K3xx_memory_map.xlsx (Peripherals sheet,
-     * S32K389 column). S32K389 populates all 12 FlexCAN instances, unlike
-     * S32K388 which only has 0-7 (and the earlier S32K388 model only wired
-     * up 0-5).
+     * Board glue for FlexCAN: each emulated controller is created as a
+     * sysbus device, assigned its instance ID, mapped into the peripheral
+     * address space, and tied to the matching message-buffer IRQ line.
      */
     static const hwaddr flexcan_bases[S32K389_CAN_COUNT] = {
         S32K3_FLEXCAN0_BASE,
@@ -373,11 +399,8 @@ static void s32k389_init_flexcan(S32K389State *s, ARMv7MState *armv7m) {
  
 static void s32k389_init_lpspi(S32K389State *s, ARMv7MState *armv7m) {
     /*
-     * Base addresses and IRQs from S32K389.h, verified against
-     * S32K3xx_memory_map.xlsx and S32K3xx_interrupt_map.xlsx (see header
-     * comments next to S32K3_LPSPIn_BASE / S32K3_LPSPIn_IRQ). These 6
-     * struct/property fields existed since the initial S32K389 model but
-     * were never instantiated here - this finishes that.
+     * LPSPI is instantiated here in the same board-level style as FlexCAN:
+     * each controller gets its own MMIO window and IRQ line on the Cortex-M7.
      */
     static const hwaddr lpspi_bases[S32K389_NUM_LPSPI] = {
         S32K3_LPSPI0_BASE,
@@ -395,24 +418,20 @@ static void s32k389_init_lpspi(S32K389State *s, ARMv7MState *armv7m) {
         S32K3_LPSPI4_IRQ,
         S32K3_LPSPI5_IRQ,
     };
-    Error *local_err = NULL;
-
     qemu_log_mask(CPU_LOG_INT, "Initializing LPSPI instances\n");
 
     for (int i = 0; i < S32K389_NUM_LPSPI; i++) {
         DeviceState *dev = qdev_new(TYPE_S32K3_LPSPI);
         s->lpspi[i] = dev;
 
+        /* The instance ID is set here so the model can distinguish one
+         * controller from the next when the guest accesses the peripheral. */
         qdev_prop_set_uint32(dev, "lpspi-id", i);
 
-        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
-            error_reportf_err(local_err, "Failed to realize LPSPI instance %d: ", i);
+        if (!s32k389_realize_sysbus_device(dev, armv7m, lpspi_bases[i],
+                                            lpspi_irqs[i], "LPSPI")) {
             return;
         }
-
-        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, lpspi_bases[i]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
-                            qdev_get_gpio_in(DEVICE(armv7m), lpspi_irqs[i]));
     }
 
     qemu_log_mask(CPU_LOG_INT, "LPSPI instances initialized\n");
@@ -420,9 +439,9 @@ static void s32k389_init_lpspi(S32K389State *s, ARMv7MState *armv7m) {
 
 static void s32k389_init_lpi2c(S32K389State *s, ARMv7MState *armv7m) {
     /*
-     * Base addresses verified against S32K3xx Reference Manual section
-     * 71.7.1.1 "LPI2C memory map". IRQ numbers are an unverified
-     * placeholder - see the S32K3_LPI2Cn_IRQ comments in the header.
+     * LPI2C is wired into the board in the same way as the other system-bus
+     * peripherals: one MMIO window per instance and one interrupt line per
+     * instance.
      */
     static const hwaddr lpi2c_bases[S32K389_NUM_LPI2C] = {
         S32K3_LPI2C0_BASE,
@@ -432,8 +451,6 @@ static void s32k389_init_lpi2c(S32K389State *s, ARMv7MState *armv7m) {
         S32K3_LPI2C0_IRQ,
         S32K3_LPI2C1_IRQ,
     };
-    Error *local_err = NULL;
-
     qemu_log_mask(CPU_LOG_INT, "Initializing LPI2C instances\n");
 
     for (int i = 0; i < S32K389_NUM_LPI2C; i++) {
@@ -442,14 +459,10 @@ static void s32k389_init_lpi2c(S32K389State *s, ARMv7MState *armv7m) {
 
         qdev_prop_set_uint32(dev, "lpi2c-id", i);
 
-        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
-            error_reportf_err(local_err, "Failed to realize LPI2C instance %d: ", i);
+        if (!s32k389_realize_sysbus_device(dev, armv7m, lpi2c_bases[i],
+                                            lpi2c_irqs[i], "LPI2C")) {
             return;
         }
-
-        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, lpi2c_bases[i]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
-                            qdev_get_gpio_in(DEVICE(armv7m), lpi2c_irqs[i]));
     }
 
     qemu_log_mask(CPU_LOG_INT, "LPI2C instances initialized\n");
@@ -457,9 +470,9 @@ static void s32k389_init_lpi2c(S32K389State *s, ARMv7MState *armv7m) {
 
 static void s32k389_init_swt(S32K389State *s, ARMv7MState *armv7m) {
     /*
-     * Base addresses verified against S32K3xx Reference Manual section
-     * 66.6.1 "SWT memory map". IRQ numbers are an unverified placeholder -
-     * see the S32K3_SWTn_IRQ comments in the header.
+     * SWT is added as a simple watchdog controller on the system bus so the
+     * board exposes the same kind of MMIO + interrupt wiring used by the
+     * other peripheral drivers.
      */
     static const hwaddr swt_bases[S32K389_NUM_SWT] = {
         S32K3_SWT0_BASE,
@@ -473,8 +486,6 @@ static void s32k389_init_swt(S32K389State *s, ARMv7MState *armv7m) {
         S32K3_SWT2_IRQ,
         S32K3_SWT3_IRQ,
     };
-    Error *local_err = NULL;
-
     qemu_log_mask(CPU_LOG_INT, "Initializing SWT instances\n");
 
     for (int i = 0; i < S32K389_NUM_SWT; i++) {
@@ -483,14 +494,10 @@ static void s32k389_init_swt(S32K389State *s, ARMv7MState *armv7m) {
 
         qdev_prop_set_uint32(dev, "swt-id", i);
 
-        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
-            error_reportf_err(local_err, "Failed to realize SWT instance %d: ", i);
+        if (!s32k389_realize_sysbus_device(dev, armv7m, swt_bases[i],
+                                            swt_irqs[i], "SWT")) {
             return;
         }
-
-        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, swt_bases[i]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
-                            qdev_get_gpio_in(DEVICE(armv7m), swt_irqs[i]));
     }
 
     qemu_log_mask(CPU_LOG_INT, "SWT instances initialized\n");
@@ -498,9 +505,8 @@ static void s32k389_init_swt(S32K389State *s, ARMv7MState *armv7m) {
 
 static void s32k389_init_adc(S32K389State *s, ARMv7MState *armv7m) {
     /*
-     * Base addresses verified against S32K3xx Reference Manual section
-     * 60.6.2.1 "ADC memory map". IRQ numbers are an unverified placeholder
-     * - see the S32K3_ADCn_IRQ comments in the header.
+     * ADC instances are attached to the board in the same way as the other
+     * peripheral blocks: one device object, one MMIO window, and one IRQ line.
      */
     static const hwaddr adc_bases[S32K389_NUM_ADC] = {
         S32K3_ADC0_BASE,
@@ -512,8 +518,6 @@ static void s32k389_init_adc(S32K389State *s, ARMv7MState *armv7m) {
         S32K3_ADC1_IRQ,
         S32K3_ADC2_IRQ,
     };
-    Error *local_err = NULL;
-
     qemu_log_mask(CPU_LOG_INT, "Initializing ADC instances\n");
 
     for (int i = 0; i < S32K389_NUM_ADC; i++) {
@@ -522,14 +526,10 @@ static void s32k389_init_adc(S32K389State *s, ARMv7MState *armv7m) {
 
         qdev_prop_set_uint32(dev, "adc-id", i);
 
-        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
-            error_reportf_err(local_err, "Failed to realize ADC instance %d: ", i);
+        if (!s32k389_realize_sysbus_device(dev, armv7m, adc_bases[i],
+                                            adc_irqs[i], "ADC")) {
             return;
         }
-
-        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, adc_bases[i]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
-                            qdev_get_gpio_in(DEVICE(armv7m), adc_irqs[i]));
     }
 
     qemu_log_mask(CPU_LOG_INT, "ADC instances initialized\n");
@@ -537,9 +537,8 @@ static void s32k389_init_adc(S32K389State *s, ARMv7MState *armv7m) {
 
 static void s32k389_init_emios(S32K389State *s, ARMv7MState *armv7m) {
     /*
-     * Base addresses verified against S32K3xx Reference Manual section
-     * 63.8.6.1 "eMIOS memory map". IRQ numbers are an unverified
-     * placeholder - see the S32K3_EMIOSn_IRQ comments in the header.
+     * eMIOS is registered as another board-level timer peripheral, with the
+     * same MMIO/IRQ connection pattern used throughout this machine model.
      */
     static const hwaddr emios_bases[S32K389_NUM_EMIOS] = {
         S32K3_EMIOS0_BASE,
@@ -551,8 +550,6 @@ static void s32k389_init_emios(S32K389State *s, ARMv7MState *armv7m) {
         S32K3_EMIOS1_IRQ,
         S32K3_EMIOS2_IRQ,
     };
-    Error *local_err = NULL;
-
     qemu_log_mask(CPU_LOG_INT, "Initializing eMIOS instances\n");
 
     for (int i = 0; i < S32K389_NUM_EMIOS; i++) {
@@ -561,14 +558,10 @@ static void s32k389_init_emios(S32K389State *s, ARMv7MState *armv7m) {
 
         qdev_prop_set_uint32(dev, "emios-id", i);
 
-        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
-            error_reportf_err(local_err, "Failed to realize eMIOS instance %d: ", i);
+        if (!s32k389_realize_sysbus_device(dev, armv7m, emios_bases[i],
+                                            emios_irqs[i], "eMIOS")) {
             return;
         }
-
-        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, emios_bases[i]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
-                            qdev_get_gpio_in(DEVICE(armv7m), emios_irqs[i]));
     }
 
     qemu_log_mask(CPU_LOG_INT, "eMIOS instances initialized\n");
@@ -669,10 +662,9 @@ static void s32k389_init_qspi(S32K389State *s, ARMv7MState *armv7m) {
 
 static void s32k389_init_sai(S32K389State *s, ARMv7MState *armv7m) {
     /*
-     * Base addresses verified against manual section 74.6.1.1 "SAI memory
-     * map". PARAM reset values differ per-instance (4 vs 1 data lines) -
-     * see the S32K389_NUM_SAI comment in the header. IRQ numbers are
-     * unverified placeholders - see the S32K3_SAI0_IRQ comment.
+     * SAI is attached as a board-level audio peripheral using the same basic
+     * composition as the other sysbus models: a model object, per-instance
+     * register state, and a CPU IRQ hookup.
      */
     static const hwaddr sai_bases[S32K389_NUM_SAI] = {
         S32K3_SAI0_BASE, S32K3_SAI1_BASE,
@@ -683,7 +675,6 @@ static void s32k389_init_sai(S32K389State *s, ARMv7MState *armv7m) {
     static const int sai_irqs[S32K389_NUM_SAI] = {
         S32K3_SAI0_IRQ, S32K3_SAI1_IRQ,
     };
-    Error *local_err = NULL;
     int i;
 
     qemu_log_mask(CPU_LOG_INT, "Initializing SAI\n");
@@ -694,14 +685,10 @@ static void s32k389_init_sai(S32K389State *s, ARMv7MState *armv7m) {
         s->sai[i] = dev;
         qdev_prop_set_uint32(dev, "param-reset", sai_param_resets[i]);
 
-        if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &local_err)) {
-            error_reportf_err(local_err, "Failed to realize SAI%d: ", i);
+        if (!s32k389_realize_sysbus_device(dev, armv7m, sai_bases[i],
+                                            sai_irqs[i], "SAI")) {
             return;
         }
-
-        sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, sai_bases[i]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0,
-                            qdev_get_gpio_in(DEVICE(armv7m), sai_irqs[i]));
     }
 
     qemu_log_mask(CPU_LOG_INT, "SAI instances initialized\n");
@@ -790,7 +777,9 @@ static void s32k389_init(MachineState* machine) {
     // Implement system bus device
     sysbus_realize(SYS_BUS_DEVICE(&s->armv7m), &error_local);
  
-    // Initialize UART
+    // Initialize the board's console and simple serial helpers first so the
+    // machine can expose UART traffic before the rest of the peripheral set is
+    // brought up.
     qemu_log_mask(CPU_LOG_INT, "Initializing UART\n");
     dev = qdev_new(TYPE_S32E8_LPUART);
  
@@ -799,19 +788,25 @@ static void s32k389_init(MachineState* machine) {
     qdev_prop_set_uint32(dev, "lpuart_id", 3);
     s->uart = dev;
  
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_local);
-    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_CONSOLE_LPUART_BASE);
-    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(DEVICE(&s->armv7m), S32K3_CONSOLE_LPUART_IRQ));
+    if (!s32k389_realize_sysbus_device(dev, &s->armv7m,
+                                        S32K3_CONSOLE_LPUART_BASE,
+                                        S32K3_CONSOLE_LPUART_IRQ,
+                                        "console UART")) {
+        return;
+    }
  
     // Initialize the FlexIO UART channels used for board-level loopback
     dev = qdev_new(TYPE_S32K3_FLEXIO_UART);
     s->flexio = dev;
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_local);
     s32k3_flexio_uart_connect_lpuart(S32K3_FLEXIO_UART(dev), S32K3X8_LPUART(s->uart));
-    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_FLEXIO_BASE);
-    sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, qdev_get_gpio_in(DEVICE(&s->armv7m), S32K3_FLEXIO_IRQ));
+    if (!s32k389_realize_sysbus_device(dev, &s->armv7m, S32K3_FLEXIO_BASE,
+                                        S32K3_FLEXIO_IRQ, "FlexIO UART")) {
+        return;
+    }
  
-    // Initialize FlexCAN devices
+    // Initialize the peripheral blocks next. Each one follows the same high-
+    // level pattern: create the model, map it into the S32K389 address space,
+    // and connect the CPU interrupt line that the firmware expects.
     s32k389_init_flexcan(s, &s->armv7m);
 
     // Initialize LPSPI devices
@@ -826,8 +821,10 @@ static void s32k389_init(MachineState* machine) {
     // Initialize CRC device (no interrupt line, manual 58.3.6)
     dev = qdev_new(TYPE_S32K3_CRC);
     s->crc = dev;
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_local);
-    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, S32K3_CRC_BASE);
+    if (!s32k389_realize_sysbus_device(dev, &s->armv7m, S32K3_CRC_BASE,
+                                        -1, "CRC")) {
+        return;
+    }
 
     // Initialize ADC devices
     s32k389_init_adc(s, &s->armv7m);

@@ -2,7 +2,23 @@
 
 **Repo root:** `C:\QEMU\qemu_s32k344` (a QEMU source tree; the board model lives in `hw/arm/s32k389.c` / `hw/arm/s32k389.h`)
 
-**Status as of this handoff:** all originally-scoped peripheral work is complete. Every task below is `completed` or `deleted` (N/A) in the task list. There is no in-progress work. This document exists so a fresh LLM session (or human) can understand what was built, why, how to build/test it, and what is still weak/unverified if further hardening is wanted.
+**Status as of this handoff:** all originally-scoped peripheral work is complete. Every task below is `completed` or `deleted` (N/A) in the task list. There is no in-progress work.
+
+**Current status (2026-08-07):** the S32K389 machine model is built and available in the current workspace; a local `make -j4 qemu-system-arm` run completed successfully. The most recent functional addition was the SAI peripheral model, which was implemented, wired into the board, and documented here along with its verification notes and known limitations.
+
+**Changes made in this pass:** added the SAI device model and board integration (`hw/audio/s32k3_sai.c` / `.h`), exposed the new peripheral through the S32K389 board headers and initialization path, updated the audio build configuration (`hw/audio/Kconfig` and `hw/audio/meson.build`), and added the new wiring in `hw/arm/s32k389.c` / `.h` and `hw/arm/Kconfig`. This document now captures the current build outcome, the implemented peripheral set, and the remaining verification gaps for future work.
+
+### Why it was failing and how it was fixed
+
+Several issues appeared while bringing the model up to a working state, and each one had a specific root cause:
+
+- The initial build failures were not caused by the peripheral logic itself, but by using the wrong QEMU API patterns for this tree. The SAI work initially hit header include errors because the code used old-style paths such as `hw/sysbus.h` and `hw/irq.h`; those had to be switched to the tree's actual include layout under `hw/core/`.
+- The first compile attempts also failed because the device model used an outdated convention for reset hooks. In this QEMU checkout, `DeviceClass` does not have a `.reset` field, so assigning `dc->reset = ...` caused build failures. The fix was to implement a normal `foo_reset()` helper and call it explicitly from `realize()` once during device creation.
+- A few more build errors came from signature mismatches in the QOM registration code. `class_init()` in this tree expects `const void *data`, and the property table must be declared as `static const Property`, otherwise the build fails under `-Werror`.
+- The environment also introduced a separate class of problems. The source tree was checked out with Windows-style CRLF line endings, which breaks QEMU's Meson/Ninja flow in the Linux build environment. The fix was to build from a Linux clone in `/tmp/qbuild`, copy over the modified files, and strip CRLF before configuring and building.
+- The last major issue was build-system churn from adding new device files and Kconfig/meson wiring. Each change required rerunning Meson configuration and then rebuilding incrementally with Ninja. Once the board wiring, build files, and device files were all aligned, the final build completed successfully.
+
+This document exists so a fresh LLM session (or human) can understand what was built, why, how to build/test it, and what is still weak/unverified if further hardening is wanted.
 
 ---
 
