@@ -232,15 +232,17 @@ configure_ethernet() {
             ;;
         user)
             echo "Using user-mode Ethernet networking"
-            ETH_ARGS=(-nic user)
+            # create a netdev with a stable ID that the board model will bind to
+            ETH_ARGS=( -netdev "user,id=gmac0" )
             ;;
         tap)
             if [ -z "$ETH_IFNAME" ]; then
                 ETH_IFNAME="tap0"
             fi
             ensure_tap_interface
-            echo "Using TAP Ethernet backend '$ETH_IFNAME'"
-            ETH_ARGS=(-nic "tap,ifname=$ETH_IFNAME,script=no,downscript=no")
+            echo "Using TAP Ethernet backend '$ETH_IFNAME' (netdev id=gmac0)"
+            # create a netdev with id=gmac0 so the board's GMAC device can bind to it
+            ETH_ARGS=( -netdev "tap,id=gmac0,ifname=$ETH_IFNAME,script=no,downscript=no" )
             ;;
         *)
             echo "Error: unsupported Ethernet backend '$ETH_BACKEND'" >&2

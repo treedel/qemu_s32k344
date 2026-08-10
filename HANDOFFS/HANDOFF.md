@@ -317,3 +317,37 @@ Notes and recommendations / next steps:
 - The launcher now documents example monitor usage (TCP/unix sockets). If you want the helper script to itself start QEMU with a TCP monitor socket, that can be added as a small enhancement — currently the script uses `-serial mon:stdio` by default (interactive combined monitor and serial on stdio).
 
 This note and the `launch_qemu_389.sh` changes are intended to make reproducing packet captures easier for future testers and to reduce manual host setup steps.
+
+
+## 12. Quick Launch Commands
+Below are ready-to-run commands for the Ethernet and CAN demos using the updated launcher, plus the host-side commands to observe traffic and to clean up interfaces when done.
+
+CAN demo — SocketCAN (vcan) visible on host
+- Launch QEMU using SocketCAN (auto-creates vcan0 if missing):
+  sudo ./launch_qemu_389.sh --can socketcan --can-ifname vcan0 ELF/s32k389/FlexCAN_Ip_Example_S32K389.elf
+- On the host, observe CAN frames (requires can-utils):
+  sudo candump vcan0
+  or (tcpdump can also show CAN traffic if supported):
+  sudo tcpdump -i vcan0 -n -e
+- If candump is not installed:
+  sudo apt install can-utils
+  then run: sudo candump vcan0
+
+CAN demo — internal QEMU CAN bus (no host socket)
+- Launch with an internal QEMU CAN bus (no host SocketCAN):
+  sudo ./launch_qemu_389.sh --can internal ELF/s32k389/FlexCAN_Ip_Example_S32K389.elf.elf
+- No host-side SocketCAN interface is present; inspect firmware output on serial/console (the script uses -serial mon:stdio).
+
+Helpful monitor / capture notes
+- Use tcpdump -i tap0 -n -e or Wireshark on the tap interface to see Ethernet frames.
+- If you see QEMU warnings like "nic … has no peer" or tcpdump says "That device is not up", bring up the interface manually:
+  sudo ip link set tap0 up
+  sudo ip link set vcan0 up
+  (The launcher auto-creates/ups tap0 and vcan0 when requested — only needed if you created them manually or changed defaults.)
+- If the firmware uses an internal MAC loopback that never sends frames to the netdev, host-side capture will not show those frames. In that case, either disable internal loopback in firmware or inspect the guest-side logs/serial output.
+
+Cleanup (remove auto-created interfaces)
+- Remove TAP:
+  sudo ip link delete tap0
+- Remove vcan:
+  sudo ip link delete vcan0
