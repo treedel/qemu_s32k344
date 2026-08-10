@@ -267,3 +267,53 @@ None of these are blocking — they're the honest list of what a next round of h
 3. To build: follow §3.6 exactly, budgeting for the 45-second-timeout/resume pattern in §3.3.
 4. To verify a peripheral change: follow the `-device loader` + monitor `xp`/`info qtree`/`info mtree` pattern in §4 — this was the only testing method used throughout the entire project (no real firmware images were used to test any peripheral in this project).
 5. If asked to add a new peripheral: check the manual's chip-specific instance table for that peripheral chapter *first* (grep the fully-extracted manual text for "instances and configuration") to confirm S32K389 actually has it — this project already caught one case (uSDHC) where a requested peripheral turned out not to exist on this specific chip variant.
+
+## 11. Launcher: network testing and recent fixes
+
+Summary of recent changes:
+
+- Updated `launch_qemu_389.sh` to add CLI options for choosing networking and CAN backends: `--ethernet`, `--ethernet-ifname`, `--can`, `--can-ifname`.
+- Automatic TAP creation and bring-up (function `ensure_tap_interface`) so the host TAP device is created and set up before QEMU starts. This fixes the `nic npcm-gmac.1 has no peer` QEMU warning and the `tap0: That device is not up` tcpdump error observed during testing.
+- Automatic vcan creation and setup for SocketCAN (`--can socketcan` / `--can auto`) so CAN tests can run without manual host-side setup.
+- Added header comments to the launcher with suggested monitor connection examples and recommended launch commands.
+
+Root cause of the observed failure during testing:
+
+- The S32K389 board model instantiates GMAC Ethernet devices, but the original launcher did not provide any QEMU netdev backend (no `-nic`/`-netdev` options). Without a netdev backend, the emulated NICs have no peer and frames are not routed to any host device for capture.
+- When the TAP backend was requested, the specified TAP interface (`tap0`) either did not exist or was down. QEMU attached the NIC to the host TAP device but the interface was not up, so tcpdump could not capture frames and QEMU warned that the NIC had no peer.
+
+What was changed and why:
+
+- Auto-create and bring up TAP interface prior to launching QEMU. This guarantees the TAP exists and is up when QEMU realizes the NIC device.
+- Provide `--ethernet` and `--can` CLI flags to the launcher so test runs can explicitly enable/disable networking/CAN and select backend types.
+- Create and bring up a `vcan` interface when SocketCAN is requested (or `--can auto` detects missing vcan) so CAN tests are easier to run on a host without manual setup.
+
+Files modified:
+
+- `launch_qemu_389.sh` — added CLI parsing, TAP/vcan auto-create and bring-up, header comments with examples.
+
+Verification commands used:
+
+- Launch QEMU with TAP + auto-created tap0:
+
+  sudo ./launch_qemu_389.sh --ethernet tap --ethernet-ifname tap0 \
+       ELF/s32k389/Eth_InternalLoopback_S32K389.elf
+
+- Capture host-side packets from the TAP interface:
+
+  sudo tcpdump -i tap0 -n -e
+
+  Observed multicast IPv6/MDNS and ICMPv6 Router Solicitation frames emitted by the emulated NIC (example tcpdump output was recorded in the session logs). This confirms packets traverse to the host-side TAP device.
+
+Notes and recommendations / next steps:
+
+- If the firmware under test uses a strictly internal MAC-level loopback that never drives the PHY or netdev, host-side capture will still not show those frames. In that case either:
+  - modify the firmware to send frames that traverse the netdev (disable true internal loopback), or
+  - instrument the firmware (serial/console/logging) to report transmit/receive events, or
+  - add a QEMU-side debug hook in the GMAC model to mirror loopback frames to a pcap sink (non-trivial change in `hw/net/npcm_gmac.c`).
+
+- If TAP creation is undesirable for security or policy reasons, prefer `--ethernet user` which uses QEMU user-mode networking and does not require host TAP setup.
+
+- The launcher now documents example monitor usage (TCP/unix sockets). If you want the helper script to itself start QEMU with a TCP monitor socket, that can be added as a small enhancement — currently the script uses `-serial mon:stdio` by default (interactive combined monitor and serial on stdio).
+
+This note and the `launch_qemu_389.sh` changes are intended to make reproducing packet captures easier for future testers and to reduce manual host setup steps.
