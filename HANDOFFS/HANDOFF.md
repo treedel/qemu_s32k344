@@ -351,3 +351,11 @@ Cleanup (remove auto-created interfaces)
   sudo ip link delete tap0
 - Remove vcan:
   sudo ip link delete vcan0
+
+Ethernet demo - TAP
+TAP test:
+sudo ./launch_qemu_389.sh --ethernet tap --ethernet-ifname tap0 ELF/s32k389/Eth_InternalLoopback_S32K389.elf
+
+In another terminal confirm the TAP is up and watch traffic:
+sudo ip addr show dev tap0
+sudo tcpdump -i tap0 -n -e
